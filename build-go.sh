@@ -1,10 +1,10 @@
 #!/bin/sh
 set -e
 
-export ANDROID_HOME="$HOME/Library/Android/sdk"
-export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/29.0.14206865"
+export ANDROID_HOME="${ANDROID_HOME:-/g/Android/android-sdk}"
+export ANDROID_NDK_HOME="${ANDROID_NDK_HOME:-$ANDROID_HOME/ndk/26.1.10909125}"
 export CGO_LDFLAGS="-Wl,-z,max-page-size=16384"
-export PATH="$PATH:/opt/homebrew/bin:$HOME/go/bin"
+export PATH="$PATH:$HOME/go/bin"
 
 # Check deps
 command -v go >/dev/null || { echo "go not found"; exit 1; }
