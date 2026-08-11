@@ -43,9 +43,10 @@ type VP8DataTunnel struct {
 	keepaliveMax    time.Duration
 	keepalivePadMax int
 
-	sentFrames      atomic.Uint64
-	recvFrames      atomic.Uint64
-	keepaliveFrames atomic.Uint64
+	sentFrames        atomic.Uint64
+	recvFrames        atomic.Uint64
+	keepaliveFrames   atomic.Uint64
+	keepaliveCounter  atomic.Uint64
 
 	OnData        func([]byte)
 	OnClose       func()
@@ -269,7 +270,13 @@ func (t *VP8DataTunnel) writerLoop() {
 						continue
 					}
 					idleTicks = 0
-					sample = t.obf.EncodeKeepalive(keepalivePad)
+					// Alternate keyframe and interframe in keepalive: 1 keyframe per ~15 interframes
+					keepaliveSeq := t.keepaliveCounter.Add(1)
+					if keepaliveSeq%16 == 0 {
+						sample = t.obf.EncodeKeepalive(keepalivePad)
+					} else {
+						sample = t.obf.EncodeKeepaliveInterframe(keepalivePad)
+					}
 					keepaliveEvery, keepalivePad = t.nextKeepalive(sampleInterval)
 					isKeepalive = true
 				}
