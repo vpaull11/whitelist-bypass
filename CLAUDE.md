@@ -78,6 +78,12 @@ The layering is what matters here; it's spread across several packages and hard 
 
 **VP8 config handshake.** The joiner sends `MsgConfig` (fps, batch, trackCount) and resends every 3s until it sees `MsgConfigAck` (`config_ack.go`). Both sides must agree before the tunnel is usable, so any change to `EncodeVP8Config`/`DecodeVP8Config` is a wire-format break across every binary.
 
+**The SFU polices the published video track, and Video mode has to keep it convinced.** Two independent obligations, both in `relay/tunnel`:
+- *Keyframes.* The first payload byte is what the SFU reads as VP8's P bit, so `vp8Keepalive` (`0x30`) looks like a keyframe and `vp8Interframe` (`0xb1`) like an interframe. `EncodeData` always emits the interframe shape, so a busy tunnel publishes no keyframes at all unless something else does — `vp8tunnel.go` fires one on a 0.9–1.6s timer regardless of queue state. Starve that and Telemost flips `limitationReason` to `UNSPECIFIED` and unbinds the slot ~50s in, which reads as a one-directional tunnel death, not a media failure.
+- *RTCP.* Pion buffers inbound RTCP per `RTPSender` and drops it when nobody reads, so PLI/FIR keyframe requests are invisible unless the sender is drained. `rtcp_keyframe.go` does the drain; senders are registered against their track (`RegisterRTCPSource`) because the sender exists at track creation but the tunnel that owns pacing is built later, on PeerConnection connected. A new publish path needs that one registration line or it silently loses PLI.
+
+Keepalive padding is only legal on the keyframe shape: `Decode` treats a frame as keepalive by first byte or exact header length, so a *padded interframe* falls through to AEAD, fails on random bytes, and is dropped before epoch tracking.
+
 **Log masking.** `common/mask.go` scrubs IPs and addresses from errors when `MaskingEnabled`. Prefer `common.MaskError(err)` over `err.Error()` in anything user-visible.
 
 **Version is duplicated in four places** and must be bumped together: `relay/common/version.go`, `creator-app/package.json`, `joiner-desktop-app/package.json`, and `versionMajor`/`Minor`/`Patch` in `android-app/app/build.gradle.kts`.
