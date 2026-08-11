@@ -3,6 +3,8 @@ export const INITIAL_PORT_BASE = 10000;
 export const SCAN_INTERVAL_MS = 2000;
 export const KICK_DELAY_MS = 500;
 export const RELAY_RESTART_DELAY_MS = 500;
+/** Consecutive unexpected headless exits before we stop restarting it. */
+export const MAX_CRASH_RESTARTS = 5;
 export const HOOK_POLL_INTERVAL_MS = 500;
 export const CALL_CREATOR_INJECT_DELAY_MS = 1000;
 export const BOT_POLL_RETRY_DELAY_MS = 1000;

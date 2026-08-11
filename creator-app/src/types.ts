@@ -57,6 +57,10 @@ export interface TabState {
   pionPort: number;
   peerId?: number;
   isBot?: boolean;
+  /** Last link the headless creator reported, so a restart can rejoin the same call. */
+  joinLink?: string;
+  /** Consecutive unexpected exits, used to back off restarts. */
+  crashCount?: number;
 }
 
 export interface BotSettings {

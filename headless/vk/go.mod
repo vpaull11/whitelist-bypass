@@ -1,6 +1,7 @@
 module headless-creator
 
 go 1.26.1
+toolchain go1.26.5
 
 require (
 	github.com/pion/rtp v1.10.1

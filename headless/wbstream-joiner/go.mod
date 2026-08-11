@@ -1,6 +1,7 @@
 module headless-wbstream-joiner
 
 go 1.26.1
+toolchain go1.26.5
 
 require whitelist-bypass/relay v0.0.0
 

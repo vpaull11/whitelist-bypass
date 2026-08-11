@@ -35,6 +35,8 @@ import {
   DION_AUTH_COOKIE,
   WBSTREAM_AUTH_COOKIE,
   LOG_CAPTURE_SNIPPET,
+  MAX_CRASH_RESTARTS,
+  HeadlessLogMarker,
 } from '../constants';
 import { BotManager } from '../bot/bot-manager';
 import { DionCookieFile } from './dion-cookie-file';
@@ -393,6 +395,12 @@ export class TabManager {
     let sawAuthFailure = false;
     let sawInvalidCredentials = false;
     this.attachProcessOutput(proc, tabId, (msg) => {
+      if (msg.includes(HeadlessLogMarker.JOIN_LINK)) {
+        tab.joinLink = msg.split(HeadlessLogMarker.JOIN_LINK)[1].trim();
+      }
+      if (msg.includes(HeadlessLogMarker.TUNNEL_CONNECTED)) {
+        tab.crashCount = 0;
+      }
       if (dionCookieFile && (msg.includes('"code":1086') || msg.includes('Invalid credentials'))) {
         sawInvalidCredentials = true;
       }
@@ -415,7 +423,15 @@ export class TabManager {
         if (dionCookieFile) await dionCookieFile.clearTokens();
         await this.clearAuthCookies(config.cookieDomains, config.authCookie);
         if (this.tabs.get(tabId) === tab) this.startHeadless(tabId, platform, args);
+        return;
       }
+      // Anything else is an unexpected death (crash, killed by the OS). killRelay
+      // clears tab.relay first, so a still-matching reference means we did not ask
+      // for this. Restart against the call we already published, otherwise the
+      // joiner is left holding a link to a process that no longer exists.
+      if (tab.relay !== proc || this.tabs.get(tabId) !== tab) return;
+      tab.relay = null;
+      this.restartAfterCrash(tabId, tab, platform, args, code);
     });
   }
 
@@ -493,6 +509,37 @@ export class TabManager {
         }
       });
     });
+  }
+
+  /**
+   * Bring a crashed headless creator back up. If it had already published a link,
+   * rejoin that call instead of creating a new one so existing joiners keep working.
+   * Backs off on repeated crashes and gives up after MAX_CRASH_RESTARTS so a binary
+   * that dies on startup cannot spin forever.
+   */
+  private restartAfterCrash(
+    tabId: string,
+    tab: TabState,
+    platform: Platform,
+    args: HeadlessStartArgs,
+    code: number | null,
+  ): void {
+    const attempt = (tab.crashCount || 0) + 1;
+    tab.crashCount = attempt;
+    if (attempt > MAX_CRASH_RESTARTS) {
+      this.sendLog(tabId, `Headless died ${attempt} times in a row (last code ${code}), not restarting again. Start it manually.`);
+      return;
+    }
+    const restartArgs: HeadlessStartArgs = tab.joinLink
+      ? { mode: HeadlessMode.Join, target: tab.joinLink }
+      : args;
+    const delay = RELAY_RESTART_DELAY_MS * attempt;
+    const how = tab.joinLink ? `rejoining ${tab.joinLink}` : 'creating a new call';
+    this.sendLog(tabId, `Headless died unexpectedly (code ${code}), ${how} in ${Math.round(delay / 1000)}s (attempt ${attempt}/${MAX_CRASH_RESTARTS}).`);
+    setTimeout(() => {
+      if (this.tabs.get(tabId) !== tab || tab.relay) return;
+      this.startHeadless(tabId, platform, restartArgs);
+    }, delay);
   }
 
   killRelay(tabId: string, tab: TabState): void {
