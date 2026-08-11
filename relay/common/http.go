@@ -12,12 +12,19 @@ import (
 
 const UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36"
 
+// DefaultHTTPClient is shared by every platform API client. Connections are
+// pooled: the creators poll conference state on a ticker and fire kick/admit
+// calls per participant, so disabling keep-alives would force a fresh TCP+TLS
+// handshake per request and put the dial path under constant churn. Idle
+// connections are capped and expired so a long-lived creator does not sit on
+// stale sockets.
 var DefaultHTTPClient = &http.Client{
 	Timeout: 15 * time.Second,
 	Transport: &http.Transport{
-		DisableKeepAlives: true,
-		// MaxIdleConnsPerHost is unnecessary when DisableKeepAlives is true,
-		// and negative values cause undefined behavior in net/http internals.
+		MaxIdleConns:        16,
+		MaxIdleConnsPerHost: 4,
+		IdleConnTimeout:     60 * time.Second,
+		TLSHandshakeTimeout: 10 * time.Second,
 	},
 }
 

@@ -28,7 +28,25 @@ const (
 	tmPingPeriod = 5 * time.Second
 )
 
-var clientInstanceID = uuid.New().String()
+// clientInstanceID is rotated on reconnect while request goroutines read it,
+// so every access goes through these accessors.
+var (
+	instanceIDMu sync.RWMutex
+	clientInstanceID = uuid.New().String()
+)
+
+func instanceID() string {
+	instanceIDMu.RLock()
+	defer instanceIDMu.RUnlock()
+	return clientInstanceID
+}
+
+func rotateInstanceID() string {
+	instanceIDMu.Lock()
+	defer instanceIDMu.Unlock()
+	clientInstanceID = uuid.New().String()
+	return clientInstanceID
+}
 
 type ConnInfo struct {
 	ConferenceURI       string
@@ -66,7 +84,7 @@ type Bridge struct {
 }
 
 func tmRequest(method, path string, body interface{}, cookieStr string, cfg TMConfig) ([]byte, int, error) {
-	c := tmapi.Client{Cookie: cookieStr, AppVersion: cfg.AppVersion, InstanceID: clientInstanceID}
+	c := tmapi.Client{Cookie: cookieStr, AppVersion: cfg.AppVersion, InstanceID: instanceID()}
 	return c.Do(method, path, body)
 }
 
@@ -268,10 +286,10 @@ func (b *Bridge) forceReconnect(reason string) {
 			log.Printf("[tm-ws] self-kick failed: %v", err)
 		}
 	}
-	clientInstanceID = uuid.New().String()
-	log.Printf("[tm-ws] new instance-id=%s", clientInstanceID)
+	log.Printf("[tm-ws] new instance-id=%s", rotateInstanceID())
 	b.mu.Lock()
 	ws := b.ws
+	b.ws = nil
 	b.mu.Unlock()
 	common.CloseWS(ws)
 }
@@ -414,6 +432,9 @@ func (b *Bridge) handleMessage(raw []byte) {
 			}
 			b.mu.Unlock()
 			log.Printf("[tm-ws] Participant left: %s (%s) total=%d", name, pid, remaining)
+			if b.activeBridge != nil {
+				b.activeBridge.Reset()
+			}
 			if hadPendingKick {
 				close(ch)
 			}
@@ -496,7 +517,8 @@ func (b *Bridge) handleMessage(raw []byte) {
 		}
 		b.mu.Unlock()
 		if needRebind {
-			go b.forceReconnect("slot binding killed")
+			log.Printf("[tm-ws] slot binding changed, requesting video slots...")
+			b.requestVideoSlots()
 		}
 		b.ack(uid)
 		return
@@ -547,7 +569,7 @@ func (b *Bridge) parseICEServers(sh map[string]interface{}) {
 }
 
 func (b *Bridge) requestStates() error {
-	c := tmapi.Client{Cookie: b.cookieStr, AppVersion: b.config.AppVersion, InstanceID: clientInstanceID}
+	c := tmapi.Client{Cookie: b.cookieStr, AppVersion: b.config.AppVersion, InstanceID: instanceID()}
 	return c.RequestStates(b.connInfo.ConferenceURI, b.connInfo.PeerID)
 }
 
@@ -719,9 +741,10 @@ func (b *Bridge) initRelay() {
 	}
 	relay.OnPeerRestart = func() {
 		if b.activeBridge != nil {
-			log.Printf("[relay] new peer detected, resetting relay bridge")
+			log.Printf("[relay] new peer detected, resetting relay bridge & requesting slots")
 			b.activeBridge.Reset()
 		}
+		b.requestVideoSlots()
 	}
 	relay.OnPubICE = func(cand *webrtc.ICECandidate) {
 		if cand == nil {
@@ -818,6 +841,20 @@ func (b *Bridge) run() {
 			}
 		}()
 
+		stopSlotsKeepalive := make(chan struct{})
+		go func() {
+			ticker := time.NewTicker(20 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-stopSlotsKeepalive:
+					return
+				case <-ticker.C:
+					b.requestVideoSlots()
+				}
+			}
+		}()
+
 		for {
 			_, raw, err := ws.ReadMessage()
 			if err != nil {
@@ -829,10 +866,14 @@ func (b *Bridge) run() {
 
 		close(stopPing)
 		close(stopStateKeepalive)
+		close(stopSlotsKeepalive)
 		close(stopWaitingRoomPoll)
 		b.mu.Lock()
-		b.ws = nil
+		if b.ws == ws {
+			b.ws = nil
+		}
 		b.mu.Unlock()
+		common.CloseWS(ws)
 
 		log.Println("[tm-ws] Rejoining in 3s...")
 		time.Sleep(3 * time.Second)

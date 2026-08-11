@@ -86,6 +86,8 @@ Keepalive padding is only legal on the keyframe shape: `Decode` treats a frame a
 
 **Log masking.** `common/mask.go` scrubs IPs and addresses from errors when `MaskingEnabled`. Prefer `common.MaskError(err)` over `err.Error()` in anything user-visible.
 
+**`common.DefaultHTTPClient` pools connections on purpose.** A creator polls conference state on a ticker and fires kick/admit calls per participant, so `DisableKeepAlives` turns every one of those into a fresh TCP+TLS handshake and keeps the dial path under constant churn. Leave keep-alives on; bound the pool with `MaxIdleConns`/`IdleConnTimeout` instead. Setting `MaxIdleConnsPerHost` negative is not valid either (`net/http` documents 0 = default, positive = limit).
+
 **Version is duplicated in four places** and must be bumped together: `relay/common/version.go`, `creator-app/package.json`, `joiner-desktop-app/package.json`, and `versionMajor`/`Minor`/`Patch` in `android-app/app/build.gradle.kts`.
 
 ## Notes
