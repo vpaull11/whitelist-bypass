@@ -7,9 +7,19 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 )
 
 const UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36"
+
+var DefaultHTTPClient = &http.Client{
+	Timeout: 15 * time.Second,
+	Transport: &http.Transport{
+		DisableKeepAlives: true,
+		// MaxIdleConnsPerHost is unnecessary when DisableKeepAlives is true,
+		// and negative values cause undefined behavior in net/http internals.
+	},
+}
 
 func LoadCookies(path string) string {
 	data, err := os.ReadFile(path)
@@ -63,7 +73,7 @@ func FilterCookies(cookieHeader string, allow []string) string {
 func HttpGet(endpoint string) ([]byte, error) {
 	req, _ := http.NewRequest("GET", endpoint, nil)
 	req.Header.Set("User-Agent", UserAgent)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := DefaultHTTPClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
