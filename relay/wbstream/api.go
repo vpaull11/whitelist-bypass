@@ -73,7 +73,7 @@ type connectionDetailsResponse struct {
 func httpDo(client *http.Client, req *http.Request) (*http.Response, error) {
 	req.Header.Set("User-Agent", common.UserAgent)
 	if client == nil {
-		client = http.DefaultClient
+		client = common.DefaultHTTPClient
 	}
 	return client.Do(req)
 }
@@ -285,7 +285,7 @@ func RefreshAccessToken(client *http.Client, cookieHeader, deviceID string) (str
 	req.Header.Set("User-Agent", common.UserAgent)
 
 	if client == nil {
-		client = http.DefaultClient
+		client = common.DefaultHTTPClient
 	}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -351,7 +351,7 @@ func SetParticipantPermissions(client *http.Client, accessToken, roomID, partici
 
 func KickParticipant(client *http.Client, accessToken, roomID, participantID string) error {
 	if client == nil {
-		client = http.DefaultClient
+		client = common.DefaultHTTPClient
 	}
 	kickURL := fmt.Sprintf("%s/api-room-manager/api/v1/room/%s/participant/%s/kick", APIBase, roomID, participantID)
 	req, err := http.NewRequest("DELETE", kickURL, strings.NewReader("{}"))

@@ -212,7 +212,7 @@ func (c *Client) Do(method, path string, body interface{}) ([]byte, int, error) 
 	}
 	client := c.HTTP
 	if client == nil {
-		client = http.DefaultClient
+		client = common.DefaultHTTPClient
 	}
 	resp, err := client.Do(req)
 	if err != nil {

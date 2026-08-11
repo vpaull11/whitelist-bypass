@@ -108,7 +108,7 @@ func httpPost(endpoint string, form url.Values, extraHeaders map[string]string) 
 	for k, v := range extraHeaders {
 		req.Header.Set(k, v)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := common.DefaultHTTPClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -122,7 +122,7 @@ func httpGet(endpoint string) ([]byte, error) {
 		return nil, err
 	}
 	req.Header.Set("User-Agent", common.UserAgent)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := common.DefaultHTTPClient.Do(req)
 	if err != nil {
 		return nil, err
 	}

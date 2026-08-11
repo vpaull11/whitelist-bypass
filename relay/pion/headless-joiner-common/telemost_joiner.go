@@ -576,6 +576,7 @@ func (j *TelemostHeadlessJoiner) forceReconnect(reason string) {
 	j.logFn("telemost-joiner: new instance-id=%s", j.instanceID)
 	j.wsMu.Lock()
 	ws := j.ws
+	j.ws = nil
 	j.wsMu.Unlock()
 	common.CloseWS(ws)
 }
@@ -801,7 +802,8 @@ func (j *TelemostHeadlessJoiner) handleMessage(raw []byte) {
 		}
 		j.boundMu.Unlock()
 		if needRebind {
-			go j.forceReconnect("slot binding killed")
+			j.logFn("telemost-joiner: slot binding changed, requesting video slots...")
+			j.requestVideoSlots()
 		}
 		j.ack(uid)
 		return
@@ -958,6 +960,20 @@ func (j *TelemostHeadlessJoiner) connectAndRun() {
 		}
 	}()
 
+	stopSlotsKeepalive := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(20 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stopSlotsKeepalive:
+				return
+			case <-ticker.C:
+				j.requestVideoSlots()
+			}
+		}
+	}()
+
 	for {
 		_, raw, err := ws.ReadMessage()
 		if err != nil {
@@ -969,6 +985,7 @@ func (j *TelemostHeadlessJoiner) connectAndRun() {
 
 	close(stopPing)
 	close(stopStateKeepalive)
+	close(stopSlotsKeepalive)
 	if j.vp8tunnel != nil {
 		j.vp8tunnel.Stop()
 	}
