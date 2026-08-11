@@ -59,7 +59,11 @@ func (r *SFURelay) Init(iceServers []webrtc.ICEServer) error {
 		"audio", "tunnel-audio",
 	)
 	pubPC.AddTransceiverFromTrack(audioTrack, webrtc.RTPTransceiverInit{Direction: webrtc.RTPTransceiverDirectionSendonly})
-	pubPC.AddTransceiverFromTrack(sampleTrack, webrtc.RTPTransceiverInit{Direction: webrtc.RTPTransceiverDirectionSendonly})
+	videoTrx, _ := pubPC.AddTransceiverFromTrack(sampleTrack, webrtc.RTPTransceiverInit{Direction: webrtc.RTPTransceiverDirectionSendonly})
+	if videoTrx != nil {
+		// Let the VP8 tunnel answer the SFU's keyframe requests.
+		tunnel.RegisterRTCPSource(sampleTrack, videoTrx.Sender())
+	}
 
 	pubPC.OnICECandidate(func(cand *webrtc.ICECandidate) {
 		if cand == nil || r.OnPubICE == nil {

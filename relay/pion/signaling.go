@@ -10,6 +10,7 @@ import (
 	"github.com/pion/rtp/codecs"
 	"github.com/pion/webrtc/v4"
 	"whitelist-bypass/relay/common"
+	"whitelist-bypass/relay/tunnel"
 )
 
 type SignalingMessage struct {
@@ -155,6 +156,9 @@ func AddTunnelTracks(pc *webrtc.PeerConnection, logFn func(string, ...any), pref
 	videoSender, videoErr := pc.AddTrack(sampleTrack)
 	logFn("%s: AddTrack audio: sender=%v err=%v", prefix, audioSender != nil, audioErr)
 	logFn("%s: AddTrack video: sender=%v err=%v", prefix, videoSender != nil, videoErr)
+	// The VP8 tunnel on this track is built later; hand it the sender so it
+	// can answer the SFU's keyframe requests.
+	tunnel.RegisterRTCPSource(sampleTrack, videoSender)
 	logFn("%s: senders count: %d", prefix, len(pc.GetSenders()))
 	return sampleTrack
 }

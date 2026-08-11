@@ -198,6 +198,8 @@ func (s *Session) onLKReady() {
 			return
 		}
 		transceivers = append(transceivers, trx)
+		// Let the VP8 tunnel on this track answer keyframe requests.
+		tunnel.RegisterRTCPSource(t, trx.Sender())
 	}
 
 	s.mu.Lock()
@@ -533,6 +535,8 @@ func (s *Session) addPublisherTrack(pubPC *webrtc.PeerConnection, slot int) bool
 		s.cfg.LogFn("[lk] adapt-track-count: send add-track slot=%d: %v", slot, err)
 		return false
 	}
+	// Let the VP8 tunnel on this track answer keyframe requests.
+	tunnel.RegisterRTCPSource(track, trx.Sender())
 	s.mu.Lock()
 	s.sampleTracks = append(s.sampleTracks, track)
 	s.sampleTransceivers = append(s.sampleTransceivers, trx)

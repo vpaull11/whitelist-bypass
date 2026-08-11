@@ -23,6 +23,11 @@ const (
 	paceBatchFloorPercent = 80
 	paceDriftMin          = 5 * time.Second
 	paceDriftMax          = 20 * time.Second
+
+	// Longest gap the SFU tolerates without a keyframe on the published
+	// track before it drops the video binding.
+	keyframeIntervalMin = 900 * time.Millisecond
+	keyframeIntervalMax = 1600 * time.Millisecond
 )
 
 type VP8DataTunnel struct {
@@ -43,10 +48,16 @@ type VP8DataTunnel struct {
 	keepaliveMax    time.Duration
 	keepalivePadMax int
 
-	sentFrames        atomic.Uint64
-	recvFrames        atomic.Uint64
-	keepaliveFrames   atomic.Uint64
-	keepaliveCounter  atomic.Uint64
+	sentFrames      atomic.Uint64
+	recvFrames      atomic.Uint64
+	keepaliveFrames atomic.Uint64
+
+	// The SFU watches the published track for keyframes: EncodeData always
+	// carries an interframe header, so while traffic flows the peer would
+	// never see one and the SFU eventually unbinds the slot. Emit a
+	// keyframe-shaped frame on a timer, and immediately on PLI/FIR.
+	forceKeyframe atomic.Bool
+	lastKeyframe  atomic.Int64
 
 	OnData        func([]byte)
 	OnClose       func()
@@ -65,7 +76,7 @@ func NewVP8DataTunnelWithQueue(track *webrtc.TrackLocalStaticSample, obf *Tunnel
 	if queueDepth < sendQueueDepth {
 		queueDepth = sendQueueDepth
 	}
-	return &VP8DataTunnel{
+	t := &VP8DataTunnel{
 		track:           track,
 		obf:             obf,
 		logFn:           logFn,
@@ -78,6 +89,8 @@ func NewVP8DataTunnelWithQueue(track *webrtc.TrackLocalStaticSample, obf *Tunnel
 		keepaliveMax:    keepaliveIdleMax,
 		keepalivePadMax: keepalivePadMax,
 	}
+	t.drainRTCP(takeRTCPSource(track))
+	return t
 }
 
 func (t *VP8DataTunnel) SetKeepaliveShape(minPeriod, maxPeriod time.Duration, padMax int) {
@@ -96,6 +109,12 @@ func (t *VP8DataTunnel) SetKeepaliveShape(minPeriod, maxPeriod time.Duration, pa
 	t.logFn("vp8tunnel: keepalive shape min=%s max=%s padMax=%d", newMin, newMax, newPad)
 }
 
+func (t *VP8DataTunnel) keepalivePadMaxValue() int {
+	t.cfgMu.Lock()
+	defer t.cfgMu.Unlock()
+	return t.keepalivePadMax
+}
+
 func (t *VP8DataTunnel) nextKeepalive(sampleInterval time.Duration) (ticks, padLen int) {
 	t.cfgMu.Lock()
 	minPeriod, maxPeriod, padMax := t.keepaliveMin, t.keepaliveMax, t.keepalivePadMax
@@ -105,6 +124,30 @@ func (t *VP8DataTunnel) nextKeepalive(sampleInterval time.Duration) (ticks, padL
 		ticks = 1
 	}
 	return ticks, common.IntInRange(0, padMax)
+}
+
+// RequestKeyframe makes the writer emit a keyframe-shaped frame on its next
+// tick. Safe to call from an RTCP reader goroutine.
+func (t *VP8DataTunnel) RequestKeyframe() {
+	t.forceKeyframe.Store(true)
+}
+
+// keyframeDue reports whether a keyframe-shaped frame should go out now,
+// either because a PLI/FIR arrived or the timer elapsed.
+func (t *VP8DataTunnel) keyframeDue(now time.Time, interval time.Duration) bool {
+	if t.forceKeyframe.Load() {
+		return true
+	}
+	last := t.lastKeyframe.Load()
+	if last == 0 {
+		return true
+	}
+	return now.Sub(time.Unix(0, last)) >= interval
+}
+
+func (t *VP8DataTunnel) markKeyframeSent(now time.Time) {
+	t.forceKeyframe.Store(false)
+	t.lastKeyframe.Store(now.UnixNano())
 }
 
 func (t *VP8DataTunnel) Reconfigure(fps, batch int) {
@@ -237,6 +280,7 @@ func (t *VP8DataTunnel) writerLoop() {
 
 		ticker := time.NewTicker(sampleInterval)
 		drift := time.NewTimer(common.DurationInRange(paceDriftMin, paceDriftMax))
+		keyframeInterval := common.DurationInRange(keyframeIntervalMin, keyframeIntervalMax)
 		idleTicks := 0
 		reconfigure := false
 
@@ -260,6 +304,28 @@ func (t *VP8DataTunnel) writerLoop() {
 			case <-ticker.C:
 				var sample []byte
 				isKeepalive := false
+				// A keyframe-shaped frame is due on its own schedule, even
+				// mid-traffic: the queued payload just waits one tick.
+				if now := time.Now(); t.keyframeDue(now, keyframeInterval) {
+					t.markKeyframeSent(now)
+					keyframeInterval = common.DurationInRange(keyframeIntervalMin, keyframeIntervalMax)
+					err := t.track.WriteSample(media.Sample{
+						Data:     t.obf.EncodeKeepalive(common.IntInRange(0, t.keepalivePadMaxValue())),
+						Duration: sampleInterval,
+					})
+					if err != nil {
+						if common.Debug {
+							t.logFn("vp8tunnel: keyframe WriteSample error: %v", err)
+						}
+						continue
+					}
+					n := t.sentFrames.Add(1)
+					t.keepaliveFrames.Add(1)
+					if common.Debug {
+						t.logFn("vp8tunnel: keyframe sent (frame #%d, next in %s)", n, keyframeInterval)
+					}
+					continue
+				}
 				select {
 				case data := <-t.sendQueue:
 					sample = t.obf.EncodeData(data)
@@ -270,13 +336,7 @@ func (t *VP8DataTunnel) writerLoop() {
 						continue
 					}
 					idleTicks = 0
-					// Alternate keyframe and interframe in keepalive: 1 keyframe per ~15 interframes
-					keepaliveSeq := t.keepaliveCounter.Add(1)
-					if keepaliveSeq%16 == 0 {
-						sample = t.obf.EncodeKeepalive(keepalivePad)
-					} else {
-						sample = t.obf.EncodeKeepaliveInterframe(keepalivePad)
-					}
+					sample = t.obf.EncodeKeepalive(keepalivePad)
 					keepaliveEvery, keepalivePad = t.nextKeepalive(sampleInterval)
 					isKeepalive = true
 				}

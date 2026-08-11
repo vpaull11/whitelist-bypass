@@ -111,13 +111,6 @@ func (o *TunnelObfuscator) dataHeader() []byte {
 	return hdr
 }
 
-func (o *TunnelObfuscator) interframeHeader() []byte {
-	hdr := make([]byte, interframeHdrLen)
-	copy(hdr, vp8Interframe)
-	binary.BigEndian.PutUint32(hdr[vp8InterframeLen:], o.localEpoch)
-	return hdr
-}
-
 func (o *TunnelObfuscator) EncodeKeepalive(padLen int) []byte {
 	hdr := o.keepaliveHeader()
 	if padLen <= 0 {
@@ -126,19 +119,6 @@ func (o *TunnelObfuscator) EncodeKeepalive(padLen int) []byte {
 	out := make([]byte, keepaliveHdrLen+padLen)
 	copy(out, hdr)
 	if _, err := rand.Read(out[keepaliveHdrLen:]); err != nil {
-		return hdr
-	}
-	return out
-}
-
-func (o *TunnelObfuscator) EncodeKeepaliveInterframe(padLen int) []byte {
-	hdr := o.interframeHeader()
-	if padLen <= 0 {
-		return hdr
-	}
-	out := make([]byte, interframeHdrLen+padLen)
-	copy(out, hdr)
-	if _, err := rand.Read(out[interframeHdrLen:]); err != nil {
 		return hdr
 	}
 	return out
