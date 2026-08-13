@@ -81,6 +81,10 @@ type RelayBridge struct {
 	listener           net.Listener
 	closed             atomic.Bool
 
+	// Traffic counters (bytes flowing through the bridge).
+	recvBytes atomic.Uint64 // data received from joiner (joiner→creator→target)
+	sendBytes atomic.Uint64 // data sent back to joiner (target→creator→joiner)
+
 	onPeerConfigMu sync.Mutex
 	onPeerConfig   func(fps, batch, trackCount int)
 
@@ -214,6 +218,33 @@ func (rb *RelayBridge) Stats() (tcpConns, udpConns int, nextID uint32) {
 	return tcpConns, udpConns, rb.nextID.Load()
 }
 
+// FullStats returns connection counts and cumulative byte counters.
+func (rb *RelayBridge) FullStats() (tcpConns, udpConns int, recv, send uint64) {
+	rb.conns.Range(func(_, _ any) bool { tcpConns++; return true })
+	rb.udpClients.Range(func(_, _ any) bool { udpConns++; return true })
+	return tcpConns, udpConns, rb.recvBytes.Load(), rb.sendBytes.Load()
+}
+
+// StartStatsOutput prints a STATS: JSON line to stdout every interval.
+// The web panel parses these lines to show live connection stats.
+// This runs until the bridge is closed.
+func (rb *RelayBridge) StartStatsOutput(interval time.Duration) {
+	if interval <= 0 {
+		interval = 5 * time.Second
+	}
+	go func() {
+		for {
+			time.Sleep(interval)
+			if rb.closed.Load() {
+				return
+			}
+			tcp, udp, recv, send := rb.FullStats()
+			fmt.Printf("STATS: {\"tcpConns\":%d,\"udpConns\":%d,\"recvBytes\":%d,\"sendBytes\":%d}\n",
+				tcp, udp, recv, send)
+		}
+	}()
+}
+
 func (rb *RelayBridge) MarkReady() {
 	rb.once.Do(func() { close(rb.ready) })
 }
@@ -333,6 +364,7 @@ func (rb *RelayBridge) handleCreatorMessage(connID uint32, msgType byte, payload
 		copy(payloadCopy, payload)
 		go rb.handleUDP(connID, payloadCopy)
 	case MsgData:
+		rb.recvBytes.Add(uint64(len(payload)))
 		val, ok := rb.conns.Load(connID)
 		if !ok {
 			if common.Debug {
@@ -385,6 +417,7 @@ func (rb *RelayBridge) handleUDP(connID uint32, payload []byte) {
 	}
 	addr := string(payload[1 : 1+addrLen])
 	data := payload[1+addrLen:]
+	rb.recvBytes.Add(uint64(len(data)))
 
 	var egress *creatorUDP
 	if val, ok := rb.udpClients.Load(connID); ok {
@@ -432,6 +465,7 @@ func (rb *RelayBridge) handleUDP(connID uint32, payload []byte) {
 					if common.Debug && replies == 1 {
 						rb.logFn("relay[creator]: UDP %d first reply %dB from %s", id, n, target)
 					}
+					rb.sendBytes.Add(uint64(n))
 					rb.send(id, MsgUDPReply, buf[:n])
 				}
 			}(egress, connID, addr)
@@ -500,6 +534,7 @@ func (rb *RelayBridge) connectTCP(connID uint32, addr string) {
 		n, err := conn.Read(buf)
 		if n > 0 {
 			rb.send(connID, MsgData, buf[:n])
+			rb.sendBytes.Add(uint64(n))
 			totalRead += int64(n)
 			reads++
 			if reads == 1 {

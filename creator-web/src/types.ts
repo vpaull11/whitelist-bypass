@@ -44,6 +44,11 @@ export interface ConnectionState {
   dcPort: number;
   pionPort: number;
   error?: string;
+  // Stats from headless STATS: output
+  clientConnected: boolean;
+  activeConns: number;
+  recvMB: number;
+  sendMB: number;
 }
 
 export interface CookieEntry {
@@ -93,6 +98,11 @@ export interface ConnectionInfo {
   autoRestart: boolean;
   createdAt: string;
   error?: string;
+  // Stats
+  clientConnected: boolean;
+  activeConns: number;
+  recvMB: number;
+  sendMB: number;
 }
 
 /** WebSocket message from server → client */

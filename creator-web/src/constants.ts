@@ -13,6 +13,7 @@ export enum HeadlessLogMarker {
   TURN = 'TURN:',
   PROTOCOL = 'protocol:',
   TUNNEL_CONNECTED = 'TUNNEL CONNECTED',
+  STATS = 'STATS: ',
 }
 
 export const PLATFORM_JOIN_FLAG: Record<string, string> = {

@@ -123,6 +123,7 @@ func main() {
 			}
 			activeBridge = tunnel.NewRelayBridge(tun, "creator", bridgeReadBuf, log.Printf)
 			activeBridge.SetUpstreamSocks(*upstreamSocks, *upstreamUser, *upstreamPass)
+			activeBridge.StartStatsOutput(0)
 			activeBridge.SetOnPeerConfig(func(fps, batch, trackCount int) {
 				sess.AdaptTrackCount(trackCount)
 			})

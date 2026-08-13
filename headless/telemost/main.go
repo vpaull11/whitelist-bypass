@@ -737,6 +737,7 @@ func (b *Bridge) initRelay() {
 		}
 		b.activeBridge = tunnel.NewRelayBridge(tun, "creator", common.VP8BufSize, log.Printf)
 		b.activeBridge.SetUpstreamSocks(b.upstreamSocks, b.upstreamUser, b.upstreamPass)
+		b.activeBridge.StartStatsOutput(0)
 		fmt.Print("\n  TUNNEL CONNECTED\n")
 	}
 	relay.OnPeerRestart = func() {

@@ -317,6 +317,44 @@ body::after {
   flex-wrap: wrap;
 }
 
+/* ── Card Stats ────────────────────────────────────────────── */
+.card-stats {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+  padding: 6px 0 2px;
+}
+.card-stats-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.card-stats-client {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-weight: 500;
+}
+.card-stats-client--yes {
+  color: var(--success);
+}
+.card-stats-client--no {
+  color: var(--text-muted);
+}
+.card-stats-traffic {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.card-stats-arrow {
+  font-weight: 600;
+  font-size: 0.85rem;
+}
+.card-stats-arrow--down { color: #60a5fa; }
+.card-stats-arrow--up { color: #f59e0b; }
+
 /* ── Buttons ───────────────────────────────────────────────── */
 .btn {
   display: inline-flex; align-items: center; gap: 6px;

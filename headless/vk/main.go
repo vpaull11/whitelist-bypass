@@ -747,6 +747,7 @@ func main() {
 		ur.OnConnected = func(tun tunnel.DataTunnel) {
 			rb := tunnel.NewRelayBridge(tun, "creator", common.VP8BufSize, log.Printf)
 			rb.SetUpstreamSocks(*upstreamSocks, *upstreamUser, *upstreamPass)
+			rb.StartStatsOutput(0)
 			if st, ok := tun.(*tunnel.SymmetricScreenTunnel); ok {
 				rb.SetOnPeerConfig(func(fps, batch, trackCount int) {
 					st.SetTrackCount(trackCount)

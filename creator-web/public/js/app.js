@@ -56,6 +56,13 @@ async function copyText(text) {
   catch { toast('Failed to copy', 'error'); }
 }
 
+function formatMB(mb) {
+  if (mb < 0.01) return '0 B';
+  if (mb < 1) return (mb * 1024).toFixed(0) + ' KB';
+  if (mb < 1024) return mb.toFixed(1) + ' MB';
+  return (mb / 1024).toFixed(2) + ' GB';
+}
+
 // ── Auth ──────────────────────────────────────────────────────
 
 function showLoginScreen() {
@@ -202,6 +209,24 @@ function renderConnections() {
     }
 
     const isRunning = ['starting', 'active', 'connected', 'reconnecting'].includes(conn.status);
+
+    // Stats block (only when running)
+    let statsHtml = '';
+    if (isRunning || conn.status === 'connected') {
+      const clientClass = conn.clientConnected ? 'card-stats-client--yes' : 'card-stats-client--no';
+      const clientLabel = conn.clientConnected
+        ? `👤 Client (${conn.activeConns || 0})`
+        : '👤 No client';
+      statsHtml = `
+        <div class="card-stats">
+          <div class="card-stats-client ${clientClass}">${clientLabel}</div>
+          <div class="card-stats-traffic">
+            <span class="card-stats-item"><span class="card-stats-arrow card-stats-arrow--down">↓</span> ${formatMB(conn.recvMB || 0)}</span>
+            <span class="card-stats-item"><span class="card-stats-arrow card-stats-arrow--up">↑</span> ${formatMB(conn.sendMB || 0)}</span>
+          </div>
+        </div>`;
+    }
+
     const startBtn = !isRunning
       ? `<button class="btn btn--success btn--sm" onclick="startConn('${conn.id}')">▶ Start</button>`
       : `<button class="btn btn--sm" onclick="stopConn('${conn.id}')">⏹ Stop</button>`;
@@ -219,6 +244,7 @@ function renderConnections() {
         </div>
         ${linkHtml}
         ${errorHtml}
+        ${statsHtml}
         <div class="card-actions">
           ${startBtn}
           <button class="btn btn--sm" onclick="showLogs('${conn.id}', '${esc(conn.alias)}')">📋 Logs</button>

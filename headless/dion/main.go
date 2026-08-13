@@ -123,6 +123,7 @@ func main() {
 			}
 			activeBridge = tunnel.NewRelayBridge(tun, "creator", common.VP8BufSize, log.Printf)
 			activeBridge.SetUpstreamSocks(*upstreamSocks, *upstreamUser, *upstreamPass)
+			activeBridge.StartStatsOutput(0)
 			activeBridge.MarkReady()
 			fmt.Println("")
 			fmt.Println("  TUNNEL CONNECTED")

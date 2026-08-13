@@ -97,6 +97,10 @@ export class ConnectionManager {
       logs: [],
       dcPort: ports.dc,
       pionPort: ports.pion,
+      clientConnected: false,
+      activeConns: 0,
+      recvMB: 0,
+      sendMB: 0,
     };
 
     this.connections.set(id, state);
@@ -182,6 +186,10 @@ export class ConnectionManager {
         logs: [],
         dcPort: ports.dc,
         pionPort: ports.pion,
+        clientConnected: false,
+        activeConns: 0,
+        recvMB: 0,
+        sendMB: 0,
       };
       this.connections.set(config.id, state);
 
@@ -219,6 +227,10 @@ export class ConnectionManager {
       autoRestart: state.config.autoRestart,
       createdAt: state.config.createdAt,
       error: state.error,
+      clientConnected: state.clientConnected,
+      activeConns: state.activeConns,
+      recvMB: state.recvMB,
+      sendMB: state.sendMB,
     };
   }
 
@@ -304,6 +316,10 @@ export class ConnectionManager {
     state.currentJoinLink = undefined;
     state.turn = undefined;
     state.protocol = undefined;
+    state.clientConnected = false;
+    state.activeConns = 0;
+    state.recvMB = 0;
+    state.sendMB = 0;
     this.emitUpdate(id);
 
     const spawnArgs = ['--resources', this.resources, '--cookies', cookiesPath];
@@ -347,7 +363,10 @@ export class ConnectionManager {
         .split('\n')
         .forEach((msg) => {
           if (!msg) return;
-          this.addLog(id, msg);
+          // Don't log stats lines to UI (they repeat every 5s)
+          if (!msg.trimStart().startsWith('STATS: ')) {
+            this.addLog(id, msg);
+          }
           this.parseHeadlessLog(id, state, msg);
 
           if (
@@ -425,6 +444,18 @@ export class ConnectionManager {
       state.error = fatalMsg;
       state.tunnelConnected = false;
       this.emitUpdate(id);
+    }
+
+    // Parse stats output (not logged to avoid spam)
+    if (trimmed.startsWith(HeadlessLogMarker.STATS)) {
+      try {
+        const json = JSON.parse(trimmed.slice(HeadlessLogMarker.STATS.length));
+        state.clientConnected = (json.tcpConns + json.udpConns) > 0;
+        state.activeConns = json.tcpConns + json.udpConns;
+        state.recvMB = json.recvBytes / 1048576;
+        state.sendMB = json.sendBytes / 1048576;
+        this.emitUpdate(id);
+      } catch { /* malformed stats line, ignore */ }
     }
   }
 
