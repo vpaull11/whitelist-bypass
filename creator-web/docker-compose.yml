@@ -1,0 +1,26 @@
+services:
+  creator-web:
+    build:
+      context: ..
+      dockerfile: creator-web/Dockerfile
+    container_name: creator-web
+    restart: unless-stopped
+    ports:
+      - "${WEB_PORT:-3000}:${WEB_PORT:-3000}"
+    environment:
+      - WEB_PORT=${WEB_PORT:-3000}
+      - WEB_USER=${WEB_USER:-admin}
+      - WEB_PASS=${WEB_PASS:-changeme}
+      - DATA_DIR=/data
+      - BINS_DIR=/opt/wlb/bin
+      - UPSTREAM_SOCKS=${UPSTREAM_SOCKS:-}
+      - UPSTREAM_USER=${UPSTREAM_USER:-}
+      - UPSTREAM_PASS=${UPSTREAM_PASS:-}
+      - RESOURCES=${RESOURCES:-default}
+      - DEBUG=${DEBUG:-false}
+    volumes:
+      # Persistent data (connections, settings, cookies)
+      - creator-data:/data
+
+volumes:
+  creator-data:
