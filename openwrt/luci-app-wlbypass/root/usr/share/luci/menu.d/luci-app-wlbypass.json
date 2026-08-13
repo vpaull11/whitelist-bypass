@@ -1,0 +1,14 @@
+{
+	"admin/services/wlbypass": {
+		"title": "WL Bypass",
+		"order": 90,
+		"action": {
+			"type": "view",
+			"path": "wlbypass"
+		},
+		"depends": {
+			"acl": ["luci-app-wlbypass"],
+			"uci": {"wlbypass": true}
+		}
+	}
+}

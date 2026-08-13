@@ -1,0 +1,22 @@
+{
+	"luci-app-wlbypass": {
+		"description": "Grant access to WL Bypass configuration",
+		"read": {
+			"uci": ["wlbypass"],
+			"ubus": {
+				"service": ["list"],
+				"luci": ["getInitList", "setInitAction"]
+			},
+			"file": {
+				"/etc/init.d/wlbypass": ["list"],
+				"/usr/bin/wl-joiner": ["list"]
+			}
+		},
+		"write": {
+			"uci": ["wlbypass"],
+			"ubus": {
+				"luci": ["setInitAction"]
+			}
+		}
+	}
+}
