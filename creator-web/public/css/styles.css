@@ -592,4 +592,79 @@ body::after {
   .cookies-grid { grid-template-columns: 1fr; }
   .section-header { flex-direction: column; align-items: flex-start; gap: 10px; }
   .modal { width: 95%; }
+  .login-card { width: 92%; }
 }
+
+/* ── Login Screen ──────────────────────────────────────────── */
+.login-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 5000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg);
+  transition: opacity 0.4s, visibility 0.4s;
+}
+.login-screen--hidden {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+.login-card {
+  width: 380px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 40px 32px;
+  backdrop-filter: blur(24px);
+  box-shadow: var(--shadow-lg), 0 0 80px rgba(99, 102, 241, 0.05);
+  text-align: center;
+  animation: loginCardIn 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+}
+@keyframes loginCardIn {
+  from { transform: translateY(24px) scale(0.95); opacity: 0; }
+  to { transform: translateY(0) scale(1); opacity: 1; }
+}
+.login-logo {
+  width: 56px; height: 56px;
+  margin: 0 auto 20px;
+  display: flex; align-items: center; justify-content: center;
+  background: linear-gradient(135deg, var(--accent), #a855f7);
+  border-radius: var(--radius);
+  color: white;
+  box-shadow: 0 4px 24px rgba(99, 102, 241, 0.25);
+}
+.login-logo svg { width: 28px; height: 28px; }
+.login-title {
+  font-size: 1.5rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  margin-bottom: 4px;
+}
+.login-subtitle {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  margin-bottom: 28px;
+}
+.login-form { text-align: left; }
+.login-form .form-row { margin-bottom: 16px; }
+.login-error {
+  font-size: 0.82rem;
+  color: var(--danger);
+  min-height: 20px;
+  margin-bottom: 8px;
+  text-align: center;
+}
+.login-btn {
+  width: 100%;
+  padding: 11px 20px;
+  font-size: 0.95rem;
+  justify-content: center;
+}
+
+/* ── App Container ─────────────────────────────────────────── */
+.app-container--hidden {
+  display: none;
+}
+

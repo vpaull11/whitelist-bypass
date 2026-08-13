@@ -5,11 +5,22 @@ import express from 'express';
 import multer from 'multer';
 import * as QRCode from 'qrcode';
 import { WebSocketServer, WebSocket } from 'ws';
-import { authMiddleware } from './auth';
+import {
+  authMiddleware,
+  requireCredentials,
+  validateCredentials,
+  createSession,
+  destroySession,
+  isValidSession,
+  validateWSAuth,
+} from './auth';
 import { Store } from './store';
 import { ConnectionManager } from './connection-manager';
 import { Platform, WSMessage } from './types';
 import { PLATFORM_LABELS } from './constants';
+
+// ── Require credentials at startup ────────────────────────────
+requireCredentials();
 
 const PORT = parseInt(process.env.WEB_PORT || '3000', 10);
 const app = express();
@@ -20,8 +31,25 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 *
 
 // ── WebSocket ─────────────────────────────────────────────────
 
-const wss = new WebSocketServer({ server, path: '/ws' });
+const wss = new WebSocketServer({ noServer: true });
 const wsClients = new Set<WebSocket>();
+
+// Validate auth on WebSocket upgrade
+server.on('upgrade', (req, socket, head) => {
+  const url = new URL(req.url || '', `http://${req.headers.host}`);
+  if (url.pathname !== '/ws') {
+    socket.destroy();
+    return;
+  }
+  if (!validateWSAuth(req as unknown as { headers: Record<string, string | string[] | undefined>; url?: string })) {
+    socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+    socket.destroy();
+    return;
+  }
+  wss.handleUpgrade(req, socket, head, (ws) => {
+    wss.emit('connection', ws, req);
+  });
+});
 
 wss.on('connection', (ws) => {
   wsClients.add(ws);
@@ -50,9 +78,51 @@ cm.setEventCallback((type, connectionId, data) => {
 
 // ── Middleware ─────────────────────────────────────────────────
 
-app.use(authMiddleware);
 app.use(express.json());
 app.use(express.static(path.join(__dirname, '..', 'public')));
+
+// ── Auth endpoints (before auth middleware) ───────────────────
+
+app.post('/api/auth/login', (req, res) => {
+  const { user, pass } = req.body;
+  if (!user || !pass) {
+    res.status(400).json({ error: 'user and pass are required' });
+    return;
+  }
+  if (!validateCredentials(user, pass)) {
+    res.status(401).json({ error: 'Invalid credentials' });
+    return;
+  }
+  const token = createSession();
+  res.cookie('session', token, {
+    httpOnly: true,
+    sameSite: 'strict',
+    maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+    path: '/',
+  });
+  res.json({ success: true, token });
+});
+
+app.get('/api/auth/check', (req, res) => {
+  const cookieHeader = req.headers.cookie || '';
+  const match = cookieHeader.match(/(?:^|;\s*)session=([a-f0-9]+)/);
+  if (match && isValidSession(match[1])) {
+    res.json({ authenticated: true, user: process.env.WEB_USER });
+    return;
+  }
+  res.json({ authenticated: false });
+});
+
+app.post('/api/auth/logout', (req, res) => {
+  const cookieHeader = req.headers.cookie || '';
+  const match = cookieHeader.match(/(?:^|;\s*)session=([a-f0-9]+)/);
+  if (match) destroySession(match[1]);
+  res.clearCookie('session', { path: '/' });
+  res.json({ success: true });
+});
+
+// Apply auth to all other routes
+app.use(authMiddleware);
 
 // ── REST API: Connections ─────────────────────────────────────
 

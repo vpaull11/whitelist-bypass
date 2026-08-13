@@ -11,6 +11,35 @@
   <link rel="stylesheet" href="/css/styles.css">
 </head>
 <body>
+  <!-- ─── Login Screen ─── -->
+  <div class="login-screen" id="loginScreen">
+    <div class="login-card">
+      <div class="login-logo">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 2L2 7l10 5 10-5-10-5z"/>
+          <path d="M2 17l10 5 10-5"/>
+          <path d="M2 12l10 5 10-5"/>
+        </svg>
+      </div>
+      <h1 class="login-title">Creator Panel</h1>
+      <p class="login-subtitle">Whitelist Bypass</p>
+      <form class="login-form" id="loginForm">
+        <div class="form-row">
+          <label for="loginUser">Username</label>
+          <input type="text" id="loginUser" placeholder="admin" autocomplete="username" required>
+        </div>
+        <div class="form-row">
+          <label for="loginPass">Password</label>
+          <input type="password" id="loginPass" placeholder="••••••••" autocomplete="current-password" required>
+        </div>
+        <div class="login-error" id="loginError"></div>
+        <button type="submit" class="btn btn--primary login-btn" id="btnLogin">Sign In</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- ─── App Container (hidden until logged in) ─── -->
+  <div class="app-container app-container--hidden" id="appContainer">
   <!-- ─── Header ─── -->
   <header class="header" id="header">
     <div class="header-brand">
@@ -31,6 +60,10 @@
         <span class="status-dot status-dot--online"></span>
         <span>Online</span>
       </div>
+      <button class="btn btn--ghost btn--sm" id="btnLogout" title="Sign out">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+        Logout
+      </button>
     </div>
   </header>
 
@@ -197,6 +230,8 @@
 
   <!-- ─── Toast Container ─── -->
   <div class="toast-container" id="toastContainer"></div>
+
+  </div><!-- end .app-container -->
 
   <script src="/js/app.js"></script>
 </body>

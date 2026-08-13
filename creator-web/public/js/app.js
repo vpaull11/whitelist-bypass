@@ -23,6 +23,7 @@ let connections = [];
 let cookies = {};
 let currentLogId = null;
 let ws = null;
+let authenticated = false;
 
 // ── Helpers ───────────────────────────────────────────────────
 
@@ -33,6 +34,10 @@ async function api(method, path, body) {
   const opts = { method, headers: { 'Content-Type': 'application/json' } };
   if (body) opts.body = JSON.stringify(body);
   const res = await fetch('/api' + path, opts);
+  if (res.status === 401) {
+    showLoginScreen();
+    throw new Error('Session expired. Please log in again.');
+  }
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || 'Request failed');
   return data;
@@ -51,9 +56,78 @@ async function copyText(text) {
   catch { toast('Failed to copy', 'error'); }
 }
 
+// ── Auth ──────────────────────────────────────────────────────
+
+function showLoginScreen() {
+  authenticated = false;
+  $('loginScreen').classList.remove('login-screen--hidden');
+  $('appContainer').classList.add('app-container--hidden');
+  $('loginUser').focus();
+  if (ws) { ws.close(); ws = null; }
+}
+
+function showApp() {
+  authenticated = true;
+  $('loginScreen').classList.add('login-screen--hidden');
+  $('appContainer').classList.remove('app-container--hidden');
+  connectWS();
+  fetchInitialData();
+}
+
+async function checkAuth() {
+  try {
+    const res = await fetch('/api/auth/check');
+    const data = await res.json();
+    if (data.authenticated) {
+      showApp();
+    } else {
+      showLoginScreen();
+    }
+  } catch {
+    showLoginScreen();
+  }
+}
+
+async function handleLogin(e) {
+  e.preventDefault();
+  const user = $('loginUser').value.trim();
+  const pass = $('loginPass').value;
+  $('loginError').textContent = '';
+
+  if (!user || !pass) {
+    $('loginError').textContent = 'Enter username and password';
+    return;
+  }
+
+  try {
+    const res = await fetch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user, pass }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      $('loginError').textContent = data.error || 'Login failed';
+      return;
+    }
+    $('loginPass').value = '';
+    showApp();
+  } catch (err) {
+    $('loginError').textContent = 'Connection error';
+  }
+}
+
+async function handleLogout() {
+  try {
+    await fetch('/api/auth/logout', { method: 'POST' });
+  } catch { /* ignore */ }
+  showLoginScreen();
+}
+
 // ── WebSocket ─────────────────────────────────────────────────
 
 function connectWS() {
+  if (!authenticated) return;
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   ws = new WebSocket(`${proto}//${location.host}/ws`);
 
@@ -80,7 +154,7 @@ function connectWS() {
 
   ws.onclose = () => {
     $('serverStatus').innerHTML = '<span class="status-dot status-dot--error"></span><span>Disconnected</span>';
-    setTimeout(connectWS, 3000);
+    if (authenticated) setTimeout(connectWS, 3000);
   };
 
   ws.onopen = () => {
@@ -240,6 +314,7 @@ async function handleCookieUpload(platform, input) {
   formData.append('file', file);
   try {
     const res = await fetch(`/api/cookies/${platform}`, { method: 'POST', body: formData });
+    if (res.status === 401) { showLoginScreen(); return; }
     const data = await res.json();
     if (!res.ok) throw new Error(data.error);
     toast(`${PLATFORM_LABELS[platform]} cookies uploaded`, 'success');
@@ -385,6 +460,12 @@ function closeModal(id) {
 // ── Init ──────────────────────────────────────────────────────
 
 function init() {
+  // Login form
+  $('loginForm').addEventListener('submit', handleLogin);
+
+  // Logout
+  $('btnLogout').addEventListener('click', handleLogout);
+
   // Navigation
   $('nav').addEventListener('click', (e) => {
     const btn = e.target.closest('.nav-btn');
@@ -429,11 +510,8 @@ function init() {
   $('newAlias').addEventListener('keydown', (e) => { if (e.key === 'Enter') createConnection(); });
   $('newJoinLink').addEventListener('keydown', (e) => { if (e.key === 'Enter') createConnection(); });
 
-  // Connect WS
-  connectWS();
-
-  // Initial data fetch
-  fetchInitialData();
+  // Check auth on startup
+  checkAuth();
 }
 
 async function fetchInitialData() {
@@ -448,3 +526,4 @@ async function fetchInitialData() {
 }
 
 document.addEventListener('DOMContentLoaded', init);
+
