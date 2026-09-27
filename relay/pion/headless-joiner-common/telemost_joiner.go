@@ -385,7 +385,7 @@ func (j *TelemostHeadlessJoiner) sendHello() {
 			"participantId": j.peerID, "roomId": j.roomID,
 			"serviceName": j.serviceName, "credentials": j.credentials,
 			"capabilitiesOffer": tmapi.CapabilitiesOffer,
-			"sdkInfo":             map[string]interface{}{"implementation": "browser", "version": "6.0.0", "userAgent": common.UserAgent, "hwConcurrency": 8},
+			"sdkInfo":             map[string]interface{}{"implementation": "browser", "version": "6.2.1", "userAgent": common.UserAgent, "hwConcurrency": 12},
 			"sdkInitializationId": uuid.New().String(),
 			"disablePublisher": false, "disableSubscriber": false, "disableSubscriberAudio": false,
 		},
@@ -899,6 +899,7 @@ func (j *TelemostHeadlessJoiner) connectAndRun() {
 	wsHeader := http.Header{}
 	wsHeader.Set("User-Agent", common.UserAgent)
 	wsHeader.Set("Origin", TmOrigin)
+	wsHeader.Set("Client-Instance-Id", j.instanceID)
 
 	j.logFn("telemost-joiner: connecting to %s", j.mediaURL)
 	dialer := websocket.Dialer{

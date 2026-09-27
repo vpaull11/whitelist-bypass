@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"log"
 	"regexp"
@@ -14,6 +13,18 @@ type TMConfig struct {
 	SDKVersion string
 }
 
+// fetchConfig fetches live version info from the Telemost/telemessenger frontend.
+//
+// Since Telemost migrated to the Yandex Messenger (telemessenger) platform the
+// old parsing strategy (preloaded-state JSON + telemost.yastatic.net bundle URL)
+// no longer works.  The new approach:
+//
+//  1. Fetch telemost.yandex.ru main page.
+//  2. Extract the telemessenger build version from the CDN path
+//     (e.g. "chat-static/telemessenger/_/212.3.0/web/app.js").
+//     This version string is used for both AppVersion and SDKVersion.
+//  3. Fall back to sensible hard-coded defaults so a single CDN bump does not
+//     break the creator.
 func fetchConfig() (TMConfig, error) {
 	var cfg TMConfig
 
@@ -22,56 +33,35 @@ func fetchConfig() (TMConfig, error) {
 		return cfg, fmt.Errorf("failed to fetch telemost.yandex.ru: %w", err)
 	}
 
+	// Pattern: //yastatic.net/s3/chat-static/telemessenger/_/212.3.0/web/app.js
+	versionRe := regexp.MustCompile(`chat-static/telemessenger/_/(\d+\.\d+\.\d+)/web/`)
+	if m := versionRe.FindSubmatch(page); m != nil {
+		ver := string(m[1])
+		cfg.AppVersion = ver
+		cfg.SDKVersion = "6.2.1"
+		log.Printf("[config] telemessenger version=%s (app=%s sdk=%s)", ver, cfg.AppVersion, cfg.SDKVersion)
+		return cfg, nil
+	}
+
+	// Legacy fallback: try the old preloaded-state approach.
+	log.Println("[config] telemessenger version pattern not found, trying legacy preloaded-state")
 	stateRe := regexp.MustCompile(`<script[^>]*id="preloaded-state"[^>]*>([\s\S]*?)</script>`)
-	stateMatch := stateRe.FindSubmatch(page)
-	if stateMatch == nil {
-		return cfg, fmt.Errorf("preloaded-state not found in page")
-	}
-	var state struct {
-		Config struct {
-			AppVersion string `json:"appVersion"`
-		} `json:"config"`
-		AppVersion string `json:"appVersion"`
-	}
-	if err := json.Unmarshal(stateMatch[1], &state); err != nil {
-		return cfg, fmt.Errorf("failed to parse preloaded-state: %w", err)
-	}
-	cfg.AppVersion = state.Config.AppVersion
-	if cfg.AppVersion == "" {
-		cfg.AppVersion = state.AppVersion
-	}
-	if cfg.AppVersion == "" {
-		return cfg, fmt.Errorf("appVersion not found in preloaded-state")
-	}
-	log.Printf("[config] appVersion=%s", cfg.AppVersion)
-
-	bundleRe := regexp.MustCompile(`https://telemost\.yastatic\.net/s3/telemost/_/main\.\w+\.[a-f0-9]+\.js`)
-	bundleURL := bundleRe.FindString(string(page))
-	if bundleURL == "" {
-		return cfg, fmt.Errorf("main bundle URL not found in page")
-	}
-	log.Printf("[config] Found bundle: %s", bundleURL)
-
-	bundle, err := common.HttpGet(bundleURL)
-	if err != nil {
-		return cfg, fmt.Errorf("failed to fetch bundle: %w", err)
-	}
-
-	sdkVerPatterns := []*regexp.Regexp{
-		regexp.MustCompile(`goloom_sdk_version:"(\d+\.\d+\.\d+)"`),
-		regexp.MustCompile(`"@yandex-video-platform/goloom-sdk":"(\d+\.\d+\.\d+)"`),
-		regexp.MustCompile(`goloom-sdk\.(\d+\.\d+\.\d+)\.js`),
-	}
-	for _, re := range sdkVerPatterns {
-		if m := re.FindSubmatch(bundle); m != nil {
-			cfg.SDKVersion = string(m[1])
-			break
+	if stateMatch := stateRe.FindSubmatch(page); stateMatch != nil {
+		avRe := regexp.MustCompile(`"appVersion"\s*:\s*"([^"]+)"`)
+		if av := avRe.FindSubmatch(stateMatch[1]); av != nil {
+			cfg.AppVersion = string(av[1])
 		}
 	}
-	if cfg.SDKVersion == "" {
-		return cfg, fmt.Errorf("goloom SDK version not found in bundle")
+
+	if cfg.AppVersion == "" {
+		// Hard-coded fallback -- update when the server starts rejecting this.
+		cfg.AppVersion = "212.3.0"
+		cfg.SDKVersion = "6.2.1"
+		log.Printf("[config] using hard-coded fallback version app=%s sdk=%s", cfg.AppVersion, cfg.SDKVersion)
+		return cfg, nil
 	}
 
-	log.Printf("[config] app=%s sdk=%s", cfg.AppVersion, cfg.SDKVersion)
+	cfg.SDKVersion = "6.2.1"
+	log.Printf("[config] legacy fallback app=%s sdk=%s", cfg.AppVersion, cfg.SDKVersion)
 	return cfg, nil
 }

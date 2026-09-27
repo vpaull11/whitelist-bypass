@@ -57,6 +57,10 @@ type ConnInfo struct {
 	ServiceName         string
 	ICEServers          []webrtc.ICEServer
 	StateCheckIntervalS int
+	// New fields returned by the updated Telemost API (GOLOOM media platform)
+	PeerSessionID string
+	SessionID     string
+	MediaPlatform string
 }
 
 type Bridge struct {
@@ -118,10 +122,13 @@ func getConnection(cookieStr, confURL string, cfg TMConfig) (*ConnInfo, error) {
 		return nil, fmt.Errorf("get connection: status %d: %s", status, string(r))
 	}
 	var conn struct {
-		PeerID       string `json:"peer_id"`
-		RoomID       string `json:"room_id"`
-		Credentials  string `json:"credentials"`
-		ClientConfig struct {
+		PeerID        string `json:"peer_id"`
+		RoomID        string `json:"room_id"`
+		Credentials   string `json:"credentials"`
+		PeerSessionID string `json:"peer_session_id"`
+		SessionID     string `json:"session_id"`
+		MediaPlatform string `json:"media_platform"`
+		ClientConfig  struct {
 			MediaServerURL         string          `json:"media_server_url"`
 			ServiceName            string          `json:"service_name"`
 			ICEServers             json.RawMessage `json:"ice_servers"`
@@ -132,10 +139,14 @@ func getConnection(cookieStr, confURL string, cfg TMConfig) (*ConnInfo, error) {
 	if conn.ClientConfig.MediaServerURL == "" {
 		return nil, fmt.Errorf("empty media_server_url: %s", string(r))
 	}
+	log.Printf("[auth] media_platform=%s", conn.MediaPlatform)
 	return &ConnInfo{
 		RoomID:              conn.RoomID,
 		PeerID:              conn.PeerID,
 		Credentials:         conn.Credentials,
+		PeerSessionID:       conn.PeerSessionID,
+		SessionID:           conn.SessionID,
+		MediaPlatform:       conn.MediaPlatform,
 		MediaServerURL:      conn.ClientConfig.MediaServerURL,
 		ServiceName:         conn.ClientConfig.ServiceName,
 		ICEServers:          parseICEServersJSON(conn.ClientConfig.ICEServers),
@@ -774,6 +785,10 @@ func (b *Bridge) run() {
 	wsHeader := http.Header{}
 	wsHeader.Set("User-Agent", common.UserAgent)
 	wsHeader.Set("Origin", tmOrigin)
+	wsHeader.Set("Client-Instance-Id", instanceID())
+	if b.cookieStr != "" {
+		wsHeader.Set("Cookie", b.cookieStr)
+	}
 
 	for {
 		log.Println("[tm-ws] Connecting...")
@@ -890,6 +905,9 @@ func (b *Bridge) run() {
 		b.connInfo.MediaServerURL = newConn.MediaServerURL
 		b.connInfo.ICEServers = newConn.ICEServers
 		b.connInfo.StateCheckIntervalS = newConn.StateCheckIntervalS
+		b.connInfo.PeerSessionID = newConn.PeerSessionID
+		b.connInfo.SessionID = newConn.SessionID
+		b.connInfo.MediaPlatform = newConn.MediaPlatform
 	}
 }
 
