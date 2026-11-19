@@ -150,10 +150,15 @@ func walkGeoGroups(ctx context.Context, source io.ReaderAt, size int64, needed m
 				}
 				code = strings.ToLower(string(b))
 			case 2:
-				entries++
-				if f.kind != 2 || f.size > maxGeoEntrySize || entries > 500000 {
-					return errors.New("invalid/oversized geo group entry")
+				if f.kind != 2 {
+					return fmt.Errorf("geo entry %d has invalid wire type %d", entries+1, f.kind)
 				}
+				if f.size > maxGeoEntrySize {
+					return fmt.Errorf("geo entry %d size %d bytes exceeds %d byte limit", entries+1, f.size, maxGeoEntrySize)
+				}
+				// This pass scans every group without retaining its entries. Only
+				// the second, selected-group pass needs an entry-count budget.
+				entries++
 			case 3:
 				if f.kind != 0 {
 					return errors.New("invalid geo inverse field")
@@ -212,7 +217,7 @@ func geoIPReader(ctx context.Context, r io.ReaderAt, size int64, needed map[stri
 	}, func(code string, b []byte) error {
 		count++
 		if count > 250000 {
-			return errors.New("selected GeoIP groups exceed mobile entry limit")
+			return fmt.Errorf("selected GeoIP group %q exceeds mobile entry limit (250000 total selected entries)", code)
 		}
 		p, err := parseGeoIPEntry(b)
 		if err == nil {
@@ -236,7 +241,7 @@ func geoSiteReader(ctx context.Context, r io.ReaderAt, size int64, needed map[st
 	err := walkGeoGroups(ctx, r, size, needed, func(code string, _ bool) error { out[code] = nil; return nil }, func(code string, b []byte) error {
 		count++
 		if count > 250000 {
-			return errors.New("selected GeoSite groups exceed mobile entry limit")
+			return fmt.Errorf("selected GeoSite group %q exceeds mobile entry limit (250000 total selected entries)", code)
 		}
 		d, err := parseGeoSiteEntry(b, &attrs)
 		if err == nil {

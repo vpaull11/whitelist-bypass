@@ -293,3 +293,114 @@ func TestExactFileLimitAndOversizedEntry(t *testing.T) {
 		t.Fatal("oversized entry accepted")
 	}
 }
+
+func TestUnusedHugeGroupDoesNotRejectSelectedRules(t *testing.T) {
+	// More than the old 500000-entry scan limit. Code deliberately follows
+	// entries: selection cannot rely on protobuf field ordering.
+	entry := wireBytes(2, append(wireInt(1, 2), wireBytes(2, []byte("unused.example"))...))
+	unused := bytes.Repeat(entry, 500001)
+	unused = append(unused, wireBytes(1, []byte("ru-blocked-all"))...)
+	data := append(wireBytes(1, unused), geoSiteFixture("youtube")...)
+	got, err := loadGeoSite(data, map[string]bool{"youtube": true})
+	if err != nil || len(got["youtube"]) != 1 {
+		t.Fatal("unused large group rejected import", err)
+	}
+	if _, err = loadGeoSite(data, map[string]bool{"ru-blocked-all": true}); err == nil || !strings.Contains(err.Error(), `selected GeoSite group "ru-blocked-all" exceeds mobile entry limit`) {
+		t.Fatal("selected-entry budget lost or ambiguous error", err)
+	}
+}
+
+func TestGeoEntryErrorsDistinguishWireTypeAndSize(t *testing.T) {
+	for _, tc := range []struct {
+		entry []byte
+		want  string
+	}{
+		{wireInt(2, 1), "invalid wire type"},
+		{wireBytes(2, make([]byte, maxGeoEntrySize+1)), "byte limit"},
+	} {
+		group := append(wireBytes(1, []byte("unused")), tc.entry...)
+		_, err := loadGeoSite(wireBytes(1, group), nil)
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Fatalf("expected %s, got %v", tc.want, err)
+		}
+	}
+}
+
+// Opt-in check against public database snapshots downloaded into isolated
+// directories. Ordinary unit tests stay deterministic and network-free.
+func TestExternalBundledProfileGeodata(t *testing.T) {
+	ipPath, sitePath := os.Getenv("ROUTING_TEST_GEOIP"), os.Getenv("ROUTING_TEST_GEOSITE")
+	if ipPath == "" || sitePath == "" {
+		t.Skip("set ROUTING_TEST_GEOIP and ROUTING_TEST_GEOSITE to local database snapshots")
+	}
+	b, err := os.ReadFile("../../android-app/app/src/main/assets/default-routing.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := Parse(string(b))
+	if err != nil {
+		t.Fatal(err)
+	}
+	needIP, needSite := neededGeoGroups(p)
+	ip, err := os.Open(ipPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ip.Close()
+	ipInfo, err := ip.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ips, err := geoIPReader(context.Background(), ip, ipInfo.Size(), needIP)
+	if err != nil {
+		t.Fatal(err)
+	}
+	site, err := os.Open(sitePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer site.Close()
+	siteInfo, err := site.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sites, err := geoSiteReader(context.Background(), site, siteInfo.Size(), needSite)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = compileGroups(p, ips, sites); err != nil {
+		t.Fatal(err)
+	}
+	for code, entries := range ips {
+		t.Logf("GeoIP %s: %d prefixes", code, len(entries))
+	}
+	for code, entries := range sites {
+		t.Logf("GeoSite %s: %d domains", code, len(entries))
+	}
+	// Exercise the same atomic import and offline-reload path as Android, using
+	// the downloaded snapshots as HTTP bodies (no further network requests).
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		path := ipPath
+		if strings.HasSuffix(req.URL.Path, "geosite.dat") {
+			path = sitePath
+		}
+		f, err := os.Open(path)
+		if err != nil {
+			return nil, err
+		}
+		info, err := f.Stat()
+		if err != nil {
+			f.Close()
+			return nil, err
+		}
+		return &http.Response{StatusCode: 200, ContentLength: info.Size(), Body: f}, nil
+	})}
+	root := t.TempDir()
+	if _, err = prepareWithClient(root, profileJSON(p), nil, client); err != nil {
+		t.Fatal("real profile import", err)
+	}
+	if _, err = Load(root); err != nil {
+		t.Fatal("real profile offline reload", err)
+	}
+	t.Log("Real bundled profile: atomic import and offline reload succeeded")
+}
