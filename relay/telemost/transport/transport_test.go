@@ -134,7 +134,7 @@ func TestEnvelopeValidation(t *testing.T) {
 			t.Fatal("invalid envelope accepted")
 		}
 	}
-	valid[4] = 2
+	valid[4] = 1
 	if _, ok := decode(valid); ok {
 		t.Fatal("unknown version accepted")
 	}
@@ -310,7 +310,7 @@ func TestCapacityBackpressureAndClose(t *testing.T) {
 	c := e.channels[ID{1}]
 	other := e.channels[ID{2}]
 	e.mu.Unlock()
-	for i := 0; i < 32; i++ {
+	for i := 0; i < applicationQueueDepth; i++ {
 		c.SendData([]byte{byte(i)})
 	}
 	other.SendData([]byte("not starved"))
@@ -424,11 +424,16 @@ func TestSlowInboundClientDoesNotBlockOthers(t *testing.T) {
 		e.HandleFrame(peer.EncodeData(encode(packet{kind: hello, client: ID{byte(i)}})))
 	}
 	send := func(i byte) {
-		e.HandleFrame(peer.EncodeData(encode(packet{kind: dataUp, client: ID{i}, server: e.id, body: []byte("data")})))
+		e.mu.Lock()
+		c := e.channels[ID{i}]
+		e.mu.Unlock()
+		if c != nil {
+			c.deliver([]byte("data"))
+		}
 	}
 	send(1)
 	wait(t, started)
-	for i := 0; i < 65; i++ {
+	for i := 0; i < incomingQueueDepth+1; i++ {
 		send(1)
 	}
 	e.mu.Lock()

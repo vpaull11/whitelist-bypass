@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"whitelist-bypass/relay/tunnel"
@@ -15,6 +16,7 @@ const (
 	MaxClients       = 8 // Conservative ceiling below the current twelve-slot layout.
 	maxPayload       = 256 * 1024
 	headerSize       = 38
+	wireVersion byte = 2
 	hello       byte = 1
 	welcome     byte = 2
 	dataUp      byte = 3
@@ -40,14 +42,14 @@ type packet struct {
 func encode(p packet) []byte {
 	b := make([]byte, headerSize+len(p.body))
 	copy(b, "TMMC")
-	b[4], b[5] = 1, p.kind
+	b[4], b[5] = wireVersion, p.kind
 	copy(b[6:22], p.client[:])
 	copy(b[22:38], p.server[:])
 	copy(b[38:], p.body)
 	return b
 }
 func decode(b []byte) (packet, bool) {
-	if len(b) < headerSize || len(b) > headerSize+maxPayload || string(b[:4]) != "TMMC" || b[4] != 1 {
+	if len(b) < headerSize || len(b) > headerSize+segmentMTU || string(b[:4]) != "TMMC" || b[4] != wireVersion {
 		return packet{}, false
 	}
 	p := packet{kind: b[5], body: b[38:]}
@@ -72,27 +74,28 @@ func decode(b []byte) (packet, bool) {
 // Endpoint callbacks are serialized with incoming frames. They must not call
 // HandleFrame or Close; install bridge callbacks before returning OnChannel.
 type Endpoint struct {
-	mu           sync.Mutex
-	recvMu       sync.Mutex
-	server       bool
-	id           ID
-	selected     ID
-	writer       Writer
-	obf          *tunnel.TunnelObfuscator
-	channels     map[ID]*Channel
-	order        []ID
-	cursor       int
-	stop         chan struct{}
-	once         sync.Once
-	done         chan struct{}
-	onTimeout    func()
-	onChannel    func(*Channel)
-	logFn        func(string, ...any)
-	started      time.Time
-	warned       bool
-	failed       bool
-	retired      map[ID]bool
-	retiredOrder []ID
+	mu            sync.Mutex
+	recvMu        sync.Mutex
+	server        bool
+	id            ID
+	selected      ID
+	writer        Writer
+	obf           *tunnel.TunnelObfuscator
+	channels      map[ID]*Channel
+	order         []ID
+	cursor        int
+	stop          chan struct{}
+	once          sync.Once
+	done          chan struct{}
+	onTimeout     func()
+	onChannel     func(*Channel)
+	logFn         func(string, ...any)
+	started       time.Time
+	warned        bool
+	versionWarned bool
+	failed        bool
+	retired       map[ID]bool
+	retiredOrder  []ID
 }
 
 func New(server bool, writer Writer, obf *tunnel.TunnelObfuscator, onChannel func(*Channel), logFn func(string, ...any)) (*Endpoint, error) {
@@ -111,20 +114,22 @@ func New(server bool, writer Writer, obf *tunnel.TunnelObfuscator, onChannel fun
 // namespace and bounded output queue. Configuration is per channel; aggregate
 // publisher pacing is deliberately fixed, not last-client-wins.
 type Channel struct {
-	mu         sync.Mutex
-	id         ID
-	serverID   ID
-	endpoint   *Endpoint
-	queue      chan []byte
-	incoming   chan []byte
-	pending    []byte    // owned by endpoint scheduler under endpoint.mu
-	lastSeen   time.Time // guarded by endpoint.mu
-	welcomeDue bool
-	closed     bool
-	onData     func([]byte)
-	onClose    func()
-	stop       chan struct{}
-	fps, batch int
+	mu            sync.Mutex
+	id            ID
+	serverID      ID
+	endpoint      *Endpoint
+	queue         chan []byte
+	incoming      chan []byte
+	pending       []byte           // carrier datagram owned by endpoint scheduler under endpoint.mu
+	reliable      *reliableSession // owned by endpoint.mu
+	incomingBytes atomic.Int64
+	lastSeen      time.Time // guarded by endpoint.mu
+	welcomeDue    bool
+	closed        bool
+	onData        func([]byte)
+	onClose       func()
+	stop          chan struct{}
+	fps, batch    int
 }
 
 func (c *Channel) ID() ID                    { return c.id }
@@ -158,23 +163,33 @@ func (c *Channel) deliver(b []byte) {
 		return
 	default:
 	}
-	select {
-	case c.incoming <- append([]byte(nil), b...):
-	default:
-		// A blocked target socket is local to this client. Bound memory and close
-		// only this channel instead of blocking every participant's track reader.
-		e := c.endpoint
-		e.mu.Lock()
-		if e.channels[c.id] == c {
-			e.retire(c.id)
-			delete(e.channels, c.id)
-		}
-		if e.server {
-			e.writer.TrySendData(encode(packet{kind: reject, client: c.id, server: e.id, body: []byte{2}}))
-		}
-		e.mu.Unlock()
-		c.close()
+	if c.incomingBytes.Add(int64(len(b))) > receiveByteLimit {
+		c.incomingBytes.Add(-int64(len(b)))
+		c.fail()
+		return
 	}
+	select {
+	case c.incoming <- b:
+	default:
+		c.incomingBytes.Add(-int64(len(b)))
+		c.fail()
+	}
+}
+
+func (c *Channel) fail() {
+	// A blocked target socket is local to this client. Bound memory and close
+	// only this channel instead of blocking every participant's track reader.
+	e := c.endpoint
+	e.mu.Lock()
+	if e.channels[c.id] == c {
+		e.retire(c.id)
+		delete(e.channels, c.id)
+	}
+	if e.server {
+		e.writer.TrySendData(encode(packet{kind: reject, client: c.id, server: e.id, body: []byte{2}}))
+	}
+	e.mu.Unlock()
+	c.close()
 }
 func (c *Channel) reader() {
 	for {
@@ -182,6 +197,7 @@ func (c *Channel) reader() {
 		case <-c.stop:
 			return
 		case b := <-c.incoming:
+			c.incomingBytes.Add(-int64(len(b)))
 			c.mu.Lock()
 			fn, closed := c.onData, c.closed
 			c.mu.Unlock()
@@ -221,9 +237,12 @@ func (c *Channel) close() {
 	}
 }
 func (e *Endpoint) newChannel(id, serverID ID, now time.Time) *Channel {
-	c := &Channel{id: id, serverID: serverID, endpoint: e, queue: make(chan []byte, 32), incoming: make(chan []byte, 64), stop: make(chan struct{}), lastSeen: now, welcomeDue: e.server}
+	c := &Channel{id: id, serverID: serverID, endpoint: e, queue: make(chan []byte, applicationQueueDepth), incoming: make(chan []byte, incomingQueueDepth), stop: make(chan struct{}), lastSeen: now, welcomeDue: e.server, reliable: newReliableSession()}
 	e.channels[id] = c
 	e.order = append(e.order, id)
+	if e.logFn != nil {
+		e.logFn("telemost: channel %x reliable v%d KCP mtu=%d window=%d", id[:4], wireVersion, segmentMTU, reliableWindow)
+	}
 	go c.reader()
 	return c
 }
@@ -240,6 +259,14 @@ func (e *Endpoint) HandleFrame(frame []byte) {
 	}
 	p, ok := decode(res.Payload)
 	if !ok {
+		if len(res.Payload) >= headerSize && string(res.Payload[:4]) == "TMMC" && res.Payload[4] != wireVersion {
+			e.mu.Lock()
+			if !e.versionWarned && e.logFn != nil {
+				e.logFn("telemost: incompatible transport v%d (need v%d); update Creator and Joiner together", res.Payload[4], wireVersion)
+				e.versionWarned = true
+			}
+			e.mu.Unlock()
+		}
 		return
 	}
 	e.mu.Lock()
@@ -267,7 +294,7 @@ func (e *Endpoint) HandleFrame(frame []byte) {
 			}
 		} else if p.kind == dataUp && p.server == e.id {
 			c = e.channels[p.client]
-			if c != nil {
+			if c != nil && validSegment(p.body) {
 				c.lastSeen = now
 			}
 		}
@@ -277,7 +304,7 @@ func (e *Endpoint) HandleFrame(frame []byte) {
 			if e.logFn != nil {
 				reason := "client limit reached"
 				if p.body[0] == 2 {
-					reason = "client receive queue overloaded"
+					reason = "client channel stalled or receive queue overloaded"
 				}
 				e.logFn("telemost: creator rejected channel: %s", reason)
 			}
@@ -292,17 +319,24 @@ func (e *Endpoint) HandleFrame(frame []byte) {
 			c.lastSeen = now
 		} else if p.kind == dataDown && e.selected == p.server {
 			c = e.channels[e.id]
-			if c != nil {
+			if c != nil && validSegment(p.body) {
 				c.lastSeen = now
 			}
+		}
+	}
+	var messages [][]byte
+	if c != nil && (p.kind == dataUp || p.kind == dataDown) {
+		messages, ok = c.reliable.input(p.body, now)
+		if !ok {
+			messages = nil
 		}
 	}
 	e.mu.Unlock()
 	if created != nil && e.onChannel != nil {
 		e.onChannel(created)
 	}
-	if c != nil && (p.kind == dataUp || p.kind == dataDown) {
-		c.deliver(p.body)
+	for _, message := range messages {
+		c.deliver(message)
 	}
 }
 
@@ -345,6 +379,13 @@ func (e *Endpoint) run() {
 					expired = append(expired, c)
 					// A client endpoint cannot safely switch server incarnations with old
 					// conn IDs. Reconnect signaling to create a fresh endpoint instead.
+				} else if !c.reliable.pump(c.queue, now) {
+					delete(e.channels, id)
+					e.retire(id)
+					expired = append(expired, c)
+					if e.logFn != nil {
+						e.logFn("telemost: channel %x closed: reliable delivery stalled", id[:4])
+					}
 				} else {
 					order = append(order, id)
 				}
@@ -365,7 +406,7 @@ func (e *Endpoint) run() {
 					}
 					if c.pending == nil {
 						select {
-						case c.pending = <-c.queue:
+						case c.pending = <-c.reliable.output:
 						default:
 						}
 					}
