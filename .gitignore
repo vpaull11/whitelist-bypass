@@ -6,3 +6,25 @@ prebuilts/
 cookies*.json
 relay/relay
 whitelist-experiments/
+
+# Generated binaries, native libraries and application packages
+*.exe
+*.dll
+*.so
+*.dylib
+*.a
+*.aar
+*.apk
+*.aab
+*.ipa
+*.jar
+*.xcframework/
+*.framework/
+
+# Keep the Gradle bootstrap dependency required to build Android
+!android-app/gradle/wrapper/gradle-wrapper.jar
+
+# Extensionless Go build outputs
+/headless/*/headless-*
+/joiner-desktop-app/desktop-joiner/desktop-joiner
+/openwrt/dist/
