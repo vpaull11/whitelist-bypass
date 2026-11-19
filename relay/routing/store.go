@@ -95,20 +95,7 @@ func load(root string) (*Snapshot, error) {
 	if err != nil {
 		return nil, err
 	}
-	var ip, site []byte
-	if p.NeedGeoIP() {
-		ip, err = readLimited(filepath.Join(dir, "geoip.dat"), MaxGeoSize)
-		if err != nil {
-			return nil, err
-		}
-	}
-	if p.NeedGeoSite() {
-		site, err = readLimited(filepath.Join(dir, "geosite.dat"), MaxGeoSize)
-		if err != nil {
-			return nil, err
-		}
-	}
-	m, err := Compile(p, ip, site)
+	m, err := compileFiles(context.Background(), p, dir)
 	if err != nil {
 		return nil, err
 	}
@@ -118,6 +105,13 @@ func load(root string) (*Snapshot, error) {
 // Prepare creates and validates a snapshot in a new directory. Only the final
 // pointer replacement publishes it; failures leave the old snapshot untouched.
 func Prepare(root, input string, cb Progress, p Protector) (string, error) {
+	return prepareWithClient(root, input, cb, downloadClient(p))
+}
+
+// An explicit client lets tests exercise the full atomic import path without
+// contacting third-party geodata endpoints.
+func prepareWithClient(root, input string, cb Progress, client *http.Client) (string, error) {
+	defer client.CloseIdleConnections()
 	profile, err := Parse(input)
 	if err != nil {
 		return "", err
@@ -159,8 +153,6 @@ func Prepare(root, input string, cb Progress, p Protector) (string, error) {
 			}
 		}()
 	}
-	client := downloadClient(p)
-	defer client.CloseIdleConnections()
 	for _, item := range []struct {
 		name, url string
 		needed    bool
@@ -182,22 +174,13 @@ func Prepare(root, input string, cb Progress, p Protector) (string, error) {
 	if err = os.WriteFile(filepath.Join(dir, "profile.json"), normalized, 0600); err != nil {
 		return "", err
 	}
-	var ip, site []byte
-	if profile.NeedGeoIP() {
-		ip, err = readLimited(filepath.Join(dir, "geoip.dat"), MaxGeoSize)
-		if err != nil {
-			return "", err
-		}
+	if cb != nil {
+		cb.OnProgress("validating geodata", 0)
 	}
-	if profile.NeedGeoSite() {
-		site, err = readLimited(filepath.Join(dir, "geosite.dat"), MaxGeoSize)
-		if err != nil {
-			return "", err
-		}
-	}
-	if _, err = Compile(profile, ip, site); err != nil {
+	if _, err = compileFiles(ctx, profile, dir); err != nil {
 		return "", err
 	}
+
 	if cb != nil && cb.IsCancelled() {
 		return "", context.Canceled
 	}
@@ -312,7 +295,7 @@ func download(ctx context.Context, client *http.Client, raw, path, stage string,
 		return fmt.Errorf("%s download HTTP %d", stage, resp.StatusCode)
 	}
 	if resp.ContentLength > MaxGeoSize {
-		return errors.New("geodata download exceeds 64 MiB")
+		return fmt.Errorf("%s download size %.1f MiB exceeds %d MiB limit", stage, float64(resp.ContentLength)/(1<<20), MaxGeoSize>>20)
 	}
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 	if err != nil {
@@ -326,7 +309,7 @@ func download(ctx context.Context, client *http.Client, raw, path, stage string,
 		if n > 0 {
 			total += int64(n)
 			if total > MaxGeoSize {
-				return errors.New("geodata download exceeds 64 MiB")
+				return fmt.Errorf("%s download exceeds %d MiB limit", stage, MaxGeoSize>>20)
 			}
 			if _, err = f.Write(buf[:n]); err != nil {
 				return err

@@ -3,7 +3,6 @@ package routing
 import (
 	"encoding/binary"
 	"errors"
-	"fmt"
 	"io"
 	"net/netip"
 	"strings"
@@ -69,211 +68,100 @@ type geoDomain struct {
 	attrs map[string]bool
 }
 
-func group(data []byte) (string, [][]byte, bool, error) {
-	var code string
-	var entries [][]byte
-	inverse := false
-	err := fields(data, func(f field) error {
+func parseGeoIPEntry(entry []byte) (netip.Prefix, error) {
+	var ip []byte
+	var bits uint64
+	err := fields(entry, func(f field) error {
 		switch f.number {
 		case 1:
-			if f.kind != 2 || len(f.bytes) > 128 {
-				return errors.New("invalid geo group code")
+			if f.kind != 2 {
+				return errors.New("invalid CIDR IP")
 			}
-			code = strings.ToLower(string(f.bytes))
+			ip = f.bytes
 		case 2:
-			if f.kind != 2 || len(entries) >= 500000 {
-				return errors.New("invalid/oversized geo group")
-			}
-			entries = append(entries, f.bytes)
-		case 3:
 			if f.kind != 0 {
-				return errors.New("invalid geo inverse field")
+				return errors.New("invalid CIDR prefix")
 			}
-			inverse = f.integer != 0
+			bits = f.integer
 		}
 		return nil
 	})
-	if code == "" {
-		return "", nil, false, errors.New("missing geo group code")
+	addr, ok := netip.AddrFromSlice(ip)
+	if err != nil || !ok || bits > uint64(addr.BitLen()) {
+		return netip.Prefix{}, errors.New("invalid GeoIP CIDR")
 	}
-	return code, entries, inverse, err
+	if addr.Is4In6() {
+		if bits < 96 {
+			return netip.Prefix{}, errors.New("ambiguous IPv4-mapped GeoIP prefix")
+		}
+		addr = addr.Unmap()
+		bits -= 96
+	}
+	return netip.PrefixFrom(addr, int(bits)).Masked(), nil
 }
-func loadGeoIP(data []byte, needed map[string]bool) (map[string][]netip.Prefix, error) {
-	if len(data) == 0 || len(data) > MaxGeoSize {
-		return nil, errors.New("GeoIP database missing or exceeds 64 MiB")
-	}
-	out := map[string][]netip.Prefix{}
-	selectedEntries := 0
-	err := fields(data, func(f field) error {
-		if f.number != 1 {
-			return nil
-		}
-		if f.kind != 2 {
-			return errors.New("invalid GeoIPList")
-		}
-		code, entries, inverse, err := group(f.bytes)
-		if err != nil {
-			return err
-		}
-		if !needed[code] {
-			return nil
-		}
-		selectedEntries += len(entries)
-		if selectedEntries > 250000 {
-			return errors.New("selected GeoIP groups exceed mobile entry limit")
-		}
-		if inverse {
-			return errors.New("inverseMatch inside GeoIP database is not supported")
-		}
-		if _, exists := out[code]; exists {
-			return fmt.Errorf("duplicate geoip group %q", code)
-		}
-		out[code] = nil
-		for _, entry := range entries {
-			var ip []byte
-			var bits uint64
-			err := fields(entry, func(f field) error {
-				switch f.number {
-				case 1:
-					if f.kind != 2 {
-						return errors.New("invalid CIDR IP")
-					}
-					ip = f.bytes
-				case 2:
-					if f.kind != 0 {
-						return errors.New("invalid CIDR prefix")
-					}
-					bits = f.integer
-				}
-				return nil
-			})
-			addr, ok := netip.AddrFromSlice(ip)
-			if err != nil || !ok || bits > uint64(addr.BitLen()) {
-				return errors.New("invalid GeoIP CIDR")
+
+func parseGeoSiteEntry(entry []byte, selectedAttributes *int) (geoDomain, error) {
+	d := geoDomain{}
+	err := fields(entry, func(f field) error {
+		switch f.number {
+		case 1:
+			if f.kind != 0 {
+				return errors.New("invalid domain type")
 			}
-			if addr.Is4In6() {
-				if bits < 96 {
-					return errors.New("ambiguous IPv4-mapped GeoIP prefix")
-				}
-				addr = addr.Unmap()
-				bits -= 96
+			d.kind = f.integer
+		case 2:
+			if f.kind != 2 || len(f.bytes) > 4096 {
+				return errors.New("invalid domain value")
 			}
-			out[code] = append(out[code], netip.PrefixFrom(addr, int(bits)).Masked())
-		}
-		return nil
-	})
-	if err != nil {
-		return nil, fmt.Errorf("invalid GeoIP database: %w", err)
-	}
-	for code := range needed {
-		if len(out[code]) == 0 {
-			return nil, fmt.Errorf("missing or empty geoip group %q", code)
-		}
-	}
-	return out, nil
-}
-func loadGeoSite(data []byte, needed map[string]bool) (map[string][]geoDomain, error) {
-	if len(data) == 0 || len(data) > MaxGeoSize {
-		return nil, errors.New("GeoSite database missing or exceeds 64 MiB")
-	}
-	out := map[string][]geoDomain{}
-	selectedEntries, selectedAttributes := 0, 0
-	err := fields(data, func(f field) error {
-		if f.number != 1 {
-			return nil
-		}
-		if f.kind != 2 {
-			return errors.New("invalid GeoSiteList")
-		}
-		code, entries, _, err := group(f.bytes)
-		if err != nil {
-			return err
-		}
-		if !needed[code] {
-			return nil
-		}
-		selectedEntries += len(entries)
-		if selectedEntries > 250000 {
-			return errors.New("selected GeoSite groups exceed mobile entry limit")
-		}
-		if _, exists := out[code]; exists {
-			return fmt.Errorf("duplicate geosite group %q", code)
-		}
-		out[code] = nil
-		for _, entry := range entries {
-			d := geoDomain{}
-			err := fields(entry, func(f field) error {
-				switch f.number {
+			d.value = string(f.bytes)
+		case 3:
+			if f.kind != 2 {
+				return errors.New("invalid domain attribute")
+			}
+			key := ""
+			enabled := false
+			err := fields(f.bytes, func(a field) error {
+				switch a.number {
 				case 1:
-					if f.kind != 0 {
-						return errors.New("invalid domain type")
+					if a.kind != 2 || len(a.bytes) > 128 {
+						return errors.New("invalid attribute key")
 					}
-					d.kind = f.integer
-				case 2:
-					if f.kind != 2 || len(f.bytes) > 4096 {
-						return errors.New("invalid domain value")
+					key = strings.ToLower(string(a.bytes))
+				case 2, 3:
+					if a.kind != 0 {
+						return errors.New("invalid attribute value")
 					}
-					d.value = string(f.bytes)
-				case 3:
-					if f.kind != 2 {
-						return errors.New("invalid domain attribute")
-					}
-					key := ""
-					enabled := false
-					err := fields(f.bytes, func(a field) error {
-						switch a.number {
-						case 1:
-							if a.kind != 2 || len(a.bytes) > 128 {
-								return errors.New("invalid attribute key")
-							}
-							key = strings.ToLower(string(a.bytes))
-						case 2, 3:
-							if a.kind != 0 {
-								return errors.New("invalid attribute value")
-							}
-							enabled = a.integer != 0
-						}
-						return nil
-					})
-					if err != nil {
-						return err
-					}
-					if key == "" {
-						return errors.New("empty attribute key")
-					}
-					selectedAttributes++
-					if selectedAttributes > 500000 {
-						return errors.New("selected GeoSite attributes exceed mobile limit")
-					}
-					if d.attrs == nil {
-						d.attrs = make(map[string]bool)
-					}
-					if len(d.attrs) >= 16 {
-						if _, exists := d.attrs[key]; !exists {
-							return errors.New("too many attributes on a GeoSite domain")
-						}
-					}
-					d.attrs[key] = enabled
+					enabled = a.integer != 0
 				}
 				return nil
 			})
 			if err != nil {
 				return err
 			}
-			if _, err := newDomainRule(d.kind, d.value); err != nil {
-				return err
+			if key == "" {
+				return errors.New("empty attribute key")
 			}
-			out[code] = append(out[code], d)
+			(*selectedAttributes)++
+			if *selectedAttributes > 500000 {
+				return errors.New("selected GeoSite attributes exceed mobile limit")
+			}
+			if d.attrs == nil {
+				d.attrs = make(map[string]bool)
+			}
+			if len(d.attrs) >= 16 {
+				if _, exists := d.attrs[key]; !exists {
+					return errors.New("too many attributes on a GeoSite domain")
+				}
+			}
+			d.attrs[key] = enabled
 		}
 		return nil
 	})
 	if err != nil {
-		return nil, fmt.Errorf("invalid GeoSite database: %w", err)
+		return geoDomain{}, err
 	}
-	for code := range needed {
-		if len(out[code]) == 0 {
-			return nil, fmt.Errorf("missing or empty geosite group %q", code)
-		}
+	if _, err := newDomainRule(d.kind, d.value); err != nil {
+		return geoDomain{}, err
 	}
-	return out, nil
+	return d, nil
 }

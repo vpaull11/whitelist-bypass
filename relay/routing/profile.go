@@ -18,7 +18,7 @@ import (
 )
 
 const MaxProfileSize = 1 << 20
-const MaxGeoSize = 64 << 20
+const MaxGeoSize = 256 << 20
 const DNSAddress = "198.18.0.1"
 
 type Action string
@@ -394,9 +394,7 @@ func newDomainRule(kind uint64, v string) (domainRule, error) {
 	}
 	return r, err
 }
-func Compile(p *Profile, geoip, geosite []byte) (*Matcher, error) {
-	m := &Matcher{profile: p}
-	ips, sites := map[string][]netip.Prefix{}, map[string][]geoDomain{}
+func neededGeoGroups(p *Profile) (map[string]bool, map[string]bool) {
 	needIPs, needSites := map[string]bool{}, map[string]bool{}
 	for _, list := range [][]string{p.BlockIP, p.ProxyIP, p.DirectIP} {
 		for _, s := range list {
@@ -415,6 +413,12 @@ func Compile(p *Profile, geoip, geosite []byte) (*Matcher, error) {
 			}
 		}
 	}
+	return needIPs, needSites
+}
+
+func Compile(p *Profile, geoip, geosite []byte) (*Matcher, error) {
+	ips, sites := map[string][]netip.Prefix{}, map[string][]geoDomain{}
+	needIPs, needSites := neededGeoGroups(p)
 	var err error
 	if len(needIPs) > 0 {
 		ips, err = loadGeoIP(geoip, needIPs)
@@ -428,6 +432,11 @@ func Compile(p *Profile, geoip, geosite []byte) (*Matcher, error) {
 			return nil, err
 		}
 	}
+	return compileGroups(p, ips, sites)
+}
+
+func compileGroups(p *Profile, ips map[string][]netip.Prefix, sites map[string][]geoDomain) (*Matcher, error) {
+	m := &Matcher{profile: p}
 	for _, a := range strings.Split(p.RouteOrder, "-") {
 		set := ruleSet{action: Action(a)}
 		var il, dl []string
