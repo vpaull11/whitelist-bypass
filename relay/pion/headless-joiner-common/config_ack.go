@@ -16,6 +16,18 @@ type configAckTracker struct {
 	confirmed bool
 }
 
+// reset starts a new logical Telemost session after the previous channel closed.
+func (t *configAckTracker) reset() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.cancel != nil {
+		close(t.cancel)
+		t.cancel = nil
+	}
+	t.confirmed = false
+	t.acked = nil
+}
+
 func (t *configAckTracker) acknowledged() bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()

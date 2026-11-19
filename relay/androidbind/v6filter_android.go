@@ -30,6 +30,11 @@ type v6Filter struct {
 }
 
 func startV6Filter(tunFd, mtu int) (*v6Filter, int, error) {
+	return startV6FilterGated(tunFd, mtu, nil)
+}
+
+// gate prevents any packet reaching the engine until the routing dialer is set.
+func startV6FilterGated(tunFd, mtu int, gate <-chan struct{}) (*v6Filter, int, error) {
 	pair, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_DGRAM, 0)
 	if err != nil {
 		return nil, 0, err
@@ -38,7 +43,12 @@ func startV6Filter(tunFd, mtu int) (*v6Filter, int, error) {
 		tunFile:  os.NewFile(uintptr(tunFd), "vpntun"),
 		stackOur: os.NewFile(uintptr(pair[0]), "v6filter"),
 	}
-	go f.tunToStack(mtu)
+	go func() {
+		if gate != nil {
+			<-gate
+		}
+		f.tunToStack(mtu)
+	}()
 	go f.stackToTun(mtu)
 	return f, pair[1], nil
 }

@@ -21,6 +21,9 @@ import bypass.whitelist.util.Prefs
 import bypass.whitelist.util.SocksAuth
 import bypass.whitelist.util.Vpn
 import androidbind.Androidbind
+import androidbind.RoutedTunSession
+import androidbind.SocketProtector
+import bypass.whitelist.util.RoutingStorage
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
@@ -56,6 +59,10 @@ class TunnelVpnService : VpnService() {
     @Volatile internal var stopInProgress: Boolean = false
     private var vpnFd: ParcelFileDescriptor? = null
     private var tun2socksThread: Thread? = null
+    @Volatile private var routedSession: RoutedTunSession? = null
+    val socketProtector = object : SocketProtector {
+        override fun protect(fd: Long): Boolean = fd >= 0 && fd <= Int.MAX_VALUE && this@TunnelVpnService.protect(fd.toInt())
+    }
     @Volatile private var tunGeneration: Long = 0
 
     override fun onCreate() {
@@ -117,6 +124,7 @@ class TunnelVpnService : VpnService() {
             Handler(Looper.getMainLooper()).post {
                 try {
                     tun2socksThread = null
+                    routedSession = null
                     vpnFd = null
                     @Suppress("DEPRECATION")
                     stopForeground(true)
@@ -135,7 +143,8 @@ class TunnelVpnService : VpnService() {
         val stopDone = CountDownLatch(1)
         thread(name = "tun2socks-stop") {
             try {
-                Androidbind.stopTun2Socks()
+                val session = routedSession
+                if (session != null) session.stop() else Androidbind.stopTun2Socks()
             } catch (e: Exception) {
                 Log.e(TAG, "tun2socks stop error: ${e.message}")
             } finally {
@@ -146,8 +155,14 @@ class TunnelVpnService : VpnService() {
     }
 
     private fun start() {
-        if (isRunning || startInProgress) return
+        if (isRunning || startInProgress || stopInProgress) return
         startInProgress = true
+        val routingActive = Prefs.routingEnabled
+        val routingGoogleDns = Prefs.routingGoogleDns
+        val routingRoot = RoutingStorage.directory(this)
+        val socksPort = Prefs.socksPort
+        val socksUser = SocksAuth.user
+        val socksPass = SocksAuth.pass
 
         startForegroundNotification()
 
@@ -164,7 +179,9 @@ class TunnelVpnService : VpnService() {
             Log.w(TAG, "IPv6 capture setup failed: ${e.message}")
         }
 
-        when (Prefs.dnsMode) {
+        if (routingActive) {
+            builder.addDnsServer(Androidbind.routingDNSAddress())
+        } else when (Prefs.dnsMode) {
             DnsMode.SYSTEM -> {
                 val systemDns = getSystemDnsServers()
                 if (systemDns.isNotEmpty()) {
@@ -201,19 +218,36 @@ class TunnelVpnService : VpnService() {
                     }
                 }
                 SplitTunnelingMode.ONLY -> {
-                    Prefs.splitTunnelingPackages.forEach {
+                    val selected = Prefs.splitTunnelingPackages.filter { it != packageName }
+                    if (selected.isEmpty()) {
+                        failStart("Select at least one application for ONLY split tunneling")
+                        return
+                    }
+                    var added = 0
+                    selected.forEach {
                         try {
                             builder.addAllowedApplication(it)
+                            added += 1
                         } catch (ignored: Exception) {
                         }
+                    }
+                    if (added == 0) {
+                        failStart("None of the selected applications are installed")
+                        return
                     }
                 }
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Split tunneling failed: ${e.message}")
+            failStart("Cannot apply application split tunneling")
+            return
         }
 
-        vpnFd = builder.establish()
+        vpnFd = try {
+            builder.establish()
+        } catch (e: Exception) {
+            failStart("Cannot establish Android VPN")
+            return
+        }
         if (vpnFd == null) {
             Log.e(TAG, "Failed to establish VPN")
             startInProgress = false
@@ -227,26 +261,48 @@ class TunnelVpnService : VpnService() {
         startInProgress = false
         val fd = vpnFd!!.detachFd()
         vpnFd = null
-        Log.i(TAG, "VPN established, fd=$fd, SOCKS5 ${SocksAuth.user}:${SocksAuth.pass}@${Prefs.socksHost}:${Prefs.socksPort}")
-        updateStatus(VpnStatus.TUNNEL_ACTIVE)
+        Log.i(TAG, "VPN established, fd=$fd, service routing=$routingActive")
         val startGeneration = bumpTunGeneration()
+        val session = if (routingActive) {
+            try {
+                Androidbind.newRoutedTunSession(fd.toLong(), Vpn.MTU.toLong(), socksPort, socksUser, socksPass, routingRoot, socketProtector).also { it.setGoogleDNS(routingGoogleDns) }
+            } catch (e: Exception) {
+                closeRawFd(fd)
+                failStart("Cannot prepare routing session: ${e.message}")
+                return
+            }
+        } else null
+        routedSession = session
 
         tun2socksThread = Thread {
             if (!isRunning || stopInProgress || !isTunGenerationCurrent(startGeneration)) {
-                closeRawFd(fd)
+                if (session != null) session.stop() else closeRawFd(fd)
                 return@Thread
             }
             try {
-                Androidbind.startTun2Socks(fd.toLong(), Vpn.MTU.toLong(), Prefs.socksPort, SocksAuth.user, SocksAuth.pass)
+                if (session != null) session.start()
+                else Androidbind.startTun2Socks(fd.toLong(), Vpn.MTU.toLong(), socksPort, socksUser, socksPass)
+                Handler(Looper.getMainLooper()).post {
+                    if (isRunning && isTunGenerationCurrent(startGeneration)) updateStatus(VpnStatus.TUNNEL_ACTIVE)
+                }
             } catch (e: Exception) {
-                Log.e(TAG, "tun2socks error: ${e.message}")
-                isRunning = false
-                startInProgress = false
-                stopInProgress = false
-                TunnelServiceState.logCallback?.invoke("tun2socks error: ${e.message}")
-                TunnelServiceState.vpnStatusCallback?.invoke(VpnStatus.TUNNEL_LOST)
+                session?.stop()
+                Handler(Looper.getMainLooper()).post {
+                    if (isTunGenerationCurrent(startGeneration)) failStart("tun2socks error: ${e.message}")
+                }
             }
         }.also { it.start() }
+    }
+
+    private fun failStart(message: String) {
+        routedSession = null
+        tun2socksThread = null
+        isRunning = false
+        startInProgress = false
+        Log.e(TAG, message)
+        TunnelServiceState.logCallback?.invoke(message)
+        TunnelServiceState.vpnStatusCallback?.invoke(VpnStatus.CALL_FAILED)
+        safeStopSelf()
     }
 
     private fun bumpTunGeneration(): Long = synchronized(this) {

@@ -19,6 +19,7 @@ import (
 	"github.com/pion/webrtc/v4"
 	"whitelist-bypass/relay/common"
 	tmapi "whitelist-bypass/relay/telemost"
+	"whitelist-bypass/relay/telemost/transport"
 	"whitelist-bypass/relay/tunnel"
 )
 
@@ -31,7 +32,7 @@ const (
 // clientInstanceID is rotated on reconnect while request goroutines read it,
 // so every access goes through these accessors.
 var (
-	instanceIDMu sync.RWMutex
+	instanceIDMu     sync.RWMutex
 	clientInstanceID = uuid.New().String()
 )
 
@@ -74,7 +75,9 @@ type Bridge struct {
 	subSeq        int
 	peers         map[string]string
 	readBuf       int
-	activeBridge  *tunnel.RelayBridge
+	bridgesMu     sync.Mutex
+	bridges       map[*transport.Channel]*tunnel.RelayBridge
+	statsOnce     sync.Once
 	selfName      string
 	upstreamSocks string
 	upstreamUser  string
@@ -443,9 +446,8 @@ func (b *Bridge) handleMessage(raw []byte) {
 			}
 			b.mu.Unlock()
 			log.Printf("[tm-ws] Participant left: %s (%s) total=%d", name, pid, remaining)
-			if b.activeBridge != nil {
-				b.activeBridge.Reset()
-			}
+			// Client liveness closes only the affected channel. A participant
+			// leaving must not reset unrelated clients.
 			if hadPendingKick {
 				close(ch)
 			}
@@ -723,6 +725,27 @@ func (b *Bridge) pollAndAdmit() {
 		nil, b.cookieStr, b.config)
 }
 
+// Preserve a single aggregate STATS stream for the web panel.
+func (b *Bridge) outputStats() {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for range ticker.C {
+		var tcp, udp int
+		var recv, send uint64
+		b.bridgesMu.Lock()
+		clients := len(b.bridges)
+		for _, rb := range b.bridges {
+			t, u, r, s := rb.FullStats()
+			tcp += t
+			udp += u
+			recv += r
+			send += s
+		}
+		b.bridgesMu.Unlock()
+		fmt.Printf("STATS: {\"tcpConns\":%d,\"udpConns\":%d,\"recvBytes\":%d,\"sendBytes\":%d,\"clients\":%d}\n", tcp, udp, recv, send, clients)
+	}
+}
+
 func (b *Bridge) initRelay() {
 	if b.relay != nil {
 		b.relay.Close()
@@ -742,21 +765,24 @@ func (b *Bridge) initRelay() {
 	relay.OnPubReady = func() {
 		log.Printf("[relay] pub PC connected")
 	}
-	relay.OnConnected = func(tun *tunnel.VP8DataTunnel) {
-		if b.activeBridge != nil {
-			b.activeBridge.Reset()
+	relay.OnConnected = func(ch *transport.Channel) {
+		rb := tunnel.NewRelayBridge(ch, "creator", common.VP8BufSize, log.Printf)
+		rb.SetUpstreamSocks(b.upstreamSocks, b.upstreamUser, b.upstreamPass)
+		b.bridgesMu.Lock()
+		if b.bridges == nil {
+			b.bridges = make(map[*transport.Channel]*tunnel.RelayBridge)
 		}
-		b.activeBridge = tunnel.NewRelayBridge(tun, "creator", common.VP8BufSize, log.Printf)
-		b.activeBridge.SetUpstreamSocks(b.upstreamSocks, b.upstreamUser, b.upstreamPass)
-		b.activeBridge.StartStatsOutput(0)
+		b.bridges[ch] = rb
+		b.bridgesMu.Unlock()
+		ch.SetOnClose(func() {
+			rb.Close()
+			b.bridgesMu.Lock()
+			delete(b.bridges, ch)
+			b.bridgesMu.Unlock()
+		})
+		b.statsOnce.Do(func() { go b.outputStats() })
+		log.Printf("[relay] Telemost client channel established (limit=%d)", transport.MaxClients)
 		fmt.Print("\n  TUNNEL CONNECTED\n")
-	}
-	relay.OnPeerRestart = func() {
-		if b.activeBridge != nil {
-			log.Printf("[relay] new peer detected, resetting relay bridge & requesting slots")
-			b.activeBridge.Reset()
-		}
-		b.requestVideoSlots()
 	}
 	relay.OnPubICE = func(cand *webrtc.ICECandidate) {
 		if cand == nil {

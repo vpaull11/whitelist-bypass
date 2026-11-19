@@ -45,6 +45,18 @@ object Prefs {
         get() = prefs.getStringSet(PrefsKeys.SPLIT_TUNNELING_PACKAGES, emptySet()) ?: emptySet()
         set(value) = prefs.edit { putStringSet(PrefsKeys.SPLIT_TUNNELING_PACKAGES, value) }
 
+    var routingGoogleDns: Boolean
+        get() = prefs.getBoolean("routing_google_dns", true)
+        set(value) = prefs.edit { putBoolean("routing_google_dns", value) }
+
+    var routingLink: String
+        get() = prefs.getString("routing_link", "") ?: ""
+        set(value) = prefs.edit { putString("routing_link", value) }
+
+    var routingEnabled: Boolean
+        get() = prefs.getBoolean(PrefsKeys.ROUTING_ENABLED, false)
+        set(value) = prefs.edit { putBoolean(PrefsKeys.ROUTING_ENABLED, value) }
+
     var autofillEnabled: Boolean
         get() = prefs.getBoolean(PrefsKeys.AUTOFILL_ENABLED, true)
         set(value) = prefs.edit { putBoolean(PrefsKeys.AUTOFILL_ENABLED, value) }
@@ -90,11 +102,11 @@ object Prefs {
 
     var dnsMode: DnsMode
         get() {
-            val name = prefs.getString(PrefsKeys.DNS_MODE, DnsMode.SYSTEM.name)!!
+            val name = prefs.getString(PrefsKeys.DNS_MODE, DnsMode.CUSTOM.name)!!
             return try {
                 DnsMode.valueOf(name)
             } catch (_: IllegalArgumentException) {
-                DnsMode.SYSTEM
+                DnsMode.CUSTOM
             }
         }
         set(value) = prefs.edit { putString(PrefsKeys.DNS_MODE, value.name) }

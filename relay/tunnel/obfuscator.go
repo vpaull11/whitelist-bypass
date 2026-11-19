@@ -25,11 +25,11 @@ var vp8Interframe = []byte{
 }
 
 const (
-	vp8KeepaliveLen   = 20
-	vp8InterframeLen  = 17
-	epochFieldLen     = 4
-	keepaliveHdrLen   = vp8KeepaliveLen + epochFieldLen
-	interframeHdrLen  = vp8InterframeLen + epochFieldLen
+	vp8KeepaliveLen  = 20
+	vp8InterframeLen = 17
+	epochFieldLen    = 4
+	keepaliveHdrLen  = vp8KeepaliveLen + epochFieldLen
+	interframeHdrLen = vp8InterframeLen + epochFieldLen
 )
 
 var ErrEmptySecret = errors.New("tunnel: obfuscator requires a non-empty secret")
@@ -165,6 +165,14 @@ func (o *TunnelObfuscator) DecryptPayload(data []byte) ([]byte, bool) {
 		return nil, false
 	}
 	return plaintext, true
+}
+
+// DecodeUntracked authenticates a frame without updating peer epoch state.
+// Multiparty transports must track identity in their authenticated envelope,
+// rather than interpreting another participant's epoch as a peer restart.
+func (o *TunnelObfuscator) DecodeUntracked(frame []byte) DecodeResult {
+	decoder := &TunnelObfuscator{aead: o.aead, localEpoch: o.localEpoch}
+	return decoder.Decode(frame)
 }
 
 func (o *TunnelObfuscator) Decode(frame []byte) DecodeResult {

@@ -124,6 +124,11 @@ class SettingsScreenFragment : Fragment(R.layout.fragment_settings_screen) {
             (activity as? MainActivityHost)?.pushSubPage(SplitTunnelingScreenFragment())
         }
 
+        addRow(card, R.drawable.ic_setting_split, getString(R.string.settings_row_routing),
+            getString(if (Prefs.routingEnabled) R.string.routing_enabled_summary else R.string.routing_disabled_summary), null) {
+            (activity as? MainActivityHost)?.pushSubPage(RoutingScreenFragment())
+        }
+
         addRow(card, R.drawable.ic_setting_proxy, getString(R.string.settings_row_proxy), getString(R.string.settings_row_proxy_sub, Prefs.socksPort), null) {
             ProxyActionSheet.show(parentFragmentManager) { rebuild() }
         }

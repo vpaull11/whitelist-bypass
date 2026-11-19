@@ -38,6 +38,10 @@ import bypass.whitelist.tunnel.TunnelMode
 import bypass.whitelist.tunnel.TunnelServiceState
 import bypass.whitelist.tunnel.TunnelVpnService
 import bypass.whitelist.tunnel.VpnStatus
+import bypass.whitelist.ui.RoutingScreenFragment
+import bypass.whitelist.util.RoutingStorage
+import androidbind.Androidbind
+import kotlin.concurrent.thread
 import bypass.whitelist.ui.CallsListener
 import bypass.whitelist.ui.HeadlessVkFragment
 import bypass.whitelist.ui.JoinFragmentHost
@@ -54,7 +58,6 @@ import bypass.whitelist.util.SocksAuth
 import bypass.whitelist.util.maskUrl
 import java.net.InetSocketAddress
 import java.net.Socket
-import kotlin.concurrent.thread
 
 class MainActivity :
     AppCompatActivity(),
@@ -373,6 +376,8 @@ class MainActivity :
     }
 
     override fun onResetAllSettings() {
+        val routingRoot = RoutingStorage.directory(this)
+        thread(name = "routing-reset") { runCatching { Androidbind.deleteRoutingProfile(routingRoot) } }
         Prefs.resetAllSettings()
         App.applyTheme(Prefs.themeMode)
         settingsFragment()?.refresh()
@@ -496,6 +501,16 @@ class MainActivity :
     }
 
     private fun handleIntent(intent: Intent?) {
+        if (intent?.action == Intent.ACTION_VIEW) {
+            val link = intent.dataString ?: return
+            val uri = intent.data ?: return
+            if (uri.scheme == "happ" && uri.host == "routing" && uri.path?.startsWith("/add/") == true && link.length <= 262144) {
+                intent.data = null
+                intent.action = null
+                pushSubPage(RoutingScreenFragment.withLink(link))
+            }
+            return
+        }
         if (intent?.action != ACTION_AUTO_START) return
         intent.action = null
         val isConnecting = lastStatus == VpnStatus.CONNECTING

@@ -441,6 +441,11 @@ func (rb *RelayBridge) handleUDP(connID uint32, payload []byte) {
 			egress = existing
 		} else {
 			egress = created
+			if rb.closed.Load() {
+				rb.udpClients.CompareAndDelete(connID, created)
+				created.close()
+				return
+			}
 			if common.Debug {
 				rb.logFn("relay[creator]: UDP %d session opened -> %s payload=%dB", connID, addr, len(data))
 			}
@@ -523,7 +528,15 @@ func (rb *RelayBridge) connectTCP(connID uint32, addr string) {
 		rb.send(connID, MsgConnectErr, []byte(common.MaskError(err)))
 		return
 	}
+	defer conn.Close()
 	rb.conns.Store(connID, conn)
+	// A channel may close while its outbound dial is still in flight.
+	// Store before checking closed so Close either sees this socket or this
+	// goroutine removes it; never leave a late connection behind.
+	if rb.closed.Load() {
+		rb.conns.CompareAndDelete(connID, conn)
+		return
+	}
 	rb.send(connID, MsgConnectOK, nil)
 	rb.logFn("relay: CONNECTED %d -> %s", connID, common.MaskAddr(addr))
 

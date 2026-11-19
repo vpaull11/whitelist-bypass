@@ -18,6 +18,7 @@ import (
 	"github.com/pion/webrtc/v4"
 	"whitelist-bypass/relay/common"
 	tmapi "whitelist-bypass/relay/telemost"
+	"whitelist-bypass/relay/telemost/transport"
 	"whitelist-bypass/relay/tunnel"
 )
 
@@ -36,11 +37,11 @@ type TelemostHeadlessJoiner struct {
 	// joiner uses these to install /32 bypass routes before the
 	// candidate is added to Pion's PeerConnection.
 	OnRemoteCandidate func(target int, candidateOrSDP string)
-	ResolveFn      ResolveFunc
-	Status         StatusEmitter
-	PCConfig       PeerConnectionConfigurer
-	AddTracks      AddTunnelTracksFunc
-	ReadTrackFn    ReadTrackFunc
+	ResolveFn         ResolveFunc
+	Status            StatusEmitter
+	PCConfig          PeerConnectionConfigurer
+	AddTracks         AddTunnelTracksFunc
+	ReadTrackFn       ReadTrackFunc
 
 	joinLink    string
 	displayName string
@@ -58,11 +59,14 @@ type TelemostHeadlessJoiner struct {
 	pubRemoteSet bool
 	pubPending   []webrtc.ICECandidateInit
 
-	sampleTrack *webrtc.TrackLocalStaticSample
-	vp8tunnel   *tunnel.VP8DataTunnel
-	obf         *tunnel.TunnelObfuscator
-	vp8FPS      int
-	vp8Batch    int
+	sampleTrack      *webrtc.TrackLocalStaticSample
+	vp8tunnel        *tunnel.VP8DataTunnel
+	transportMu      sync.Mutex
+	transport        *transport.Endpoint
+	transportClosing bool
+	obf              *tunnel.TunnelObfuscator
+	vp8FPS           int
+	vp8Batch         int
 
 	httpClient *http.Client
 	instanceID string
@@ -83,11 +87,11 @@ type TelemostHeadlessJoiner struct {
 	configAck        configAckTracker
 	reconnectAttempt atomic.Int32
 
-	setSlotsKey     int
-	initBundleSent  bool
-	boundPeers      map[string]bool
-	unboundPeers    map[string]bool
-	boundMu         sync.Mutex
+	setSlotsKey    int
+	initBundleSent bool
+	boundPeers     map[string]bool
+	unboundPeers   map[string]bool
+	boundMu        sync.Mutex
 }
 
 func NewTelemostHeadlessJoiner(logFn func(string, ...any), resolveFn ResolveFunc, status StatusEmitter, pcConfig PeerConnectionConfigurer, addTracks AddTunnelTracksFunc, readTrackFn ReadTrackFunc) *TelemostHeadlessJoiner {
@@ -186,12 +190,31 @@ func (j *TelemostHeadlessJoiner) resetSessionState() {
 	j.pubRemoteSet = false
 	j.pubPending = nil
 	j.sampleTrack = nil
+	j.transportMu.Lock()
 	j.vp8tunnel = nil
+	j.transport = nil
+	j.transportClosing = false
+	j.transportMu.Unlock()
 	j.initBundleSent = false
 	j.boundMu.Lock()
 	j.boundPeers = nil
 	j.unboundPeers = nil
 	j.boundMu.Unlock()
+}
+
+func (j *TelemostHeadlessJoiner) stopTransport() {
+	j.configAck.reset()
+	j.transportMu.Lock()
+	j.transportClosing = true
+	endpoint, tun := j.transport, j.vp8tunnel
+	j.transport, j.vp8tunnel = nil, nil
+	j.transportMu.Unlock()
+	if endpoint != nil {
+		endpoint.Close()
+	}
+	if tun != nil {
+		tun.Stop()
+	}
 }
 
 func (j *TelemostHeadlessJoiner) Close() {
@@ -204,9 +227,7 @@ func (j *TelemostHeadlessJoiner) Close() {
 	j.ws = nil
 	j.wsMu.Unlock()
 	common.CloseWS(ws)
-	if j.vp8tunnel != nil {
-		j.vp8tunnel.Stop()
-	}
+	j.stopTransport()
 	if j.subPC != nil {
 		j.subPC.Close()
 	}
@@ -381,13 +402,13 @@ func (j *TelemostHeadlessJoiner) sendHello() {
 		"hello": map[string]interface{}{
 			"participantMeta":       map[string]interface{}{"name": j.displayName, "role": "SPEAKER", "description": "", "sendAudio": false, "sendVideo": true},
 			"participantAttributes": map[string]interface{}{"name": j.displayName, "role": "SPEAKER", "description": ""},
-			"sendAudio": false, "sendVideo": true, "sendSharing": false,
+			"sendAudio":             false, "sendVideo": true, "sendSharing": false,
 			"participantId": j.peerID, "roomId": j.roomID,
 			"serviceName": j.serviceName, "credentials": j.credentials,
-			"capabilitiesOffer": tmapi.CapabilitiesOffer,
+			"capabilitiesOffer":   tmapi.CapabilitiesOffer,
 			"sdkInfo":             map[string]interface{}{"implementation": "browser", "version": "6.2.1", "userAgent": common.UserAgent, "hwConcurrency": 12},
 			"sdkInitializationId": uuid.New().String(),
-			"disablePublisher": false, "disableSubscriber": false, "disableSubscriberAudio": false,
+			"disablePublisher":    false, "disableSubscriber": false, "disableSubscriberAudio": false,
 		},
 	})
 	j.logFn("telemost-joiner: -> hello")
@@ -442,8 +463,11 @@ func (j *TelemostHeadlessJoiner) initPC() {
 	subPC.OnTrack(func(track *webrtc.TrackRemote, receiver *webrtc.RTPReceiver) {
 		j.logFn("telemost-joiner: sub remote track: %s", track.Codec().MimeType)
 		go j.ReadTrackFn(track, func(frame []byte) {
-			if j.vp8tunnel != nil {
-				j.vp8tunnel.HandleFrame(frame)
+			j.transportMu.Lock()
+			endpoint := j.transport
+			j.transportMu.Unlock()
+			if endpoint != nil {
+				endpoint.HandleFrame(frame)
 			}
 		}, j.logFn, "telemost-joiner")
 	})
@@ -466,22 +490,40 @@ func (j *TelemostHeadlessJoiner) initPC() {
 
 	pubPC.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
 		j.logFn("telemost-joiner: pub PC state: %s", state.String())
-		if state == webrtc.PeerConnectionStateConnected && j.vp8tunnel == nil {
-			j.reconnectAttempt.Store(0)
-			j.logFn("telemost-joiner: === VP8 TUNNEL CONNECTED ===")
-			j.Status.EmitStatus(common.StatusTunnelConnected)
-			j.vp8tunnel = tunnel.NewVP8DataTunnel(j.sampleTrack, j.obf, j.logFn)
-			vp8tun := j.vp8tunnel
-			vp8tun.Start(j.vp8FPS, j.vp8Batch)
-			if !j.configAck.acknowledged() {
+		if state == webrtc.PeerConnectionStateConnected {
+			j.transportMu.Lock()
+			if j.transportClosing || j.vp8tunnel != nil {
+				j.transportMu.Unlock()
+				return
+			}
+			vp8tun := tunnel.NewVP8DataTunnel(j.sampleTrack, j.obf, j.logFn)
+			endpoint, err := transport.New(false, vp8tun, j.obf, func(ch *transport.Channel) {
+				j.reconnectAttempt.Store(0)
+				j.logFn("telemost-joiner: === VP8 TUNNEL CONNECTED ===")
+				j.Status.EmitStatus(common.StatusTunnelConnected)
+				j.configAck.reset()
+				if j.OnConnected != nil {
+					j.OnConnected(ch)
+				}
 				acked, cancel := j.configAck.arm()
-				go sendVP8ConfigUntilAcked(acked, cancel, j.stopCh, vp8tun,
-					vp8tun.FPS(), vp8tun.Batch(), 1, j.logFn, "telemost-joiner")
-				j.logFn("telemost-joiner: pushed vp8 config to creator fps=%d batch=%d", vp8tun.FPS(), vp8tun.Batch())
+				go sendVP8ConfigUntilAcked(acked, cancel, j.stopCh, ch, vp8tun.FPS(), vp8tun.Batch(), 1, j.logFn, "telemost-joiner")
+			}, j.logFn)
+			if err != nil {
+				j.transportMu.Unlock()
+				j.Status.EmitStatusError("transport init: " + common.MaskError(err))
+				return
 			}
-			if j.OnConnected != nil {
-				j.OnConnected(j.vp8tunnel)
-			}
+			j.vp8tunnel = vp8tun
+			j.transport = endpoint
+			endpoint.SetOnTimeout(func() {
+				j.Status.EmitStatusError("Telemost channel timeout: creator unavailable, video slot missing, or incompatible version")
+				j.wsMu.Lock()
+				ws := j.ws
+				j.wsMu.Unlock()
+				common.CloseWS(ws)
+			})
+			vp8tun.Start(j.vp8FPS, j.vp8Batch)
+			j.transportMu.Unlock()
 		}
 	})
 
@@ -987,9 +1029,7 @@ func (j *TelemostHeadlessJoiner) connectAndRun() {
 	close(stopPing)
 	close(stopStateKeepalive)
 	close(stopSlotsKeepalive)
-	if j.vp8tunnel != nil {
-		j.vp8tunnel.Stop()
-	}
+	j.stopTransport()
 	if j.subPC != nil {
 		j.subPC.Close()
 	}

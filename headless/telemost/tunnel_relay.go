@@ -9,6 +9,7 @@ import (
 	"github.com/pion/webrtc/v4"
 	"whitelist-bypass/relay/common"
 	tmapi "whitelist-bypass/relay/telemost"
+	"whitelist-bypass/relay/telemost/transport"
 	"whitelist-bypass/relay/tunnel"
 )
 
@@ -21,14 +22,16 @@ type SFURelay struct {
 	subPending   []webrtc.ICECandidateInit
 	mu           sync.Mutex
 
-	sampleTrack   *webrtc.TrackLocalStaticSample
-	tun           *tunnel.VP8DataTunnel
-	obf           *tunnel.TunnelObfuscator
-	OnConnected   func(*tunnel.VP8DataTunnel)
-	OnPubReady    func()
-	OnPeerRestart func()
-	OnPubICE      func(*webrtc.ICECandidate)
-	OnSubICE      func(*webrtc.ICECandidate)
+	sampleTrack *webrtc.TrackLocalStaticSample
+	tun         *tunnel.VP8DataTunnel
+	obf         *tunnel.TunnelObfuscator
+	OnConnected func(*transport.Channel)
+	transportMu sync.Mutex
+	transport   *transport.Endpoint
+	closed      bool
+	OnPubReady  func()
+	OnPubICE    func(*webrtc.ICECandidate)
+	OnSubICE    func(*webrtc.ICECandidate)
 
 	readBufSize int
 }
@@ -75,14 +78,23 @@ func (r *SFURelay) Init(iceServers []webrtc.ICEServer) error {
 	pubPC.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
 		log.Printf("[pub] connection state: %s", state.String())
 		if state == webrtc.PeerConnectionStateConnected {
-			if r.tun == nil {
-				log.Println("[relay] starting VP8 publish tunnel on pub PC connected")
-				r.tun = tunnel.NewVP8DataTunnel(r.sampleTrack, r.obf, log.Printf)
-				r.tun.Start(0, 0)
-				if r.OnConnected != nil {
-					r.OnConnected(r.tun)
-				}
+			r.transportMu.Lock()
+			if r.closed {
+				r.transportMu.Unlock()
+				return
 			}
+			if r.tun == nil {
+				r.tun = tunnel.NewVP8DataTunnel(r.sampleTrack, r.obf, log.Printf)
+				endpoint, err := transport.New(true, r.tun, r.obf, r.OnConnected, log.Printf)
+				if err != nil {
+					r.transportMu.Unlock()
+					log.Printf("[relay] transport init: %s", common.MaskError(err))
+					return
+				}
+				r.transport = endpoint
+				r.tun.Start(0, 0)
+			}
+			r.transportMu.Unlock()
 			if r.OnPubReady != nil {
 				r.OnPubReady()
 			}
@@ -206,9 +218,16 @@ func (r *SFURelay) CreatePubRenegotiate() (webrtc.SessionDescription, error) {
 }
 
 func (r *SFURelay) Close() {
-	if r.tun != nil {
-		r.tun.Stop()
-		r.tun = nil
+	r.transportMu.Lock()
+	r.closed = true
+	endpoint, tun := r.transport, r.tun
+	r.transport, r.tun = nil, nil
+	r.transportMu.Unlock()
+	if endpoint != nil {
+		endpoint.Close()
+	}
+	if tun != nil {
+		tun.Stop()
 	}
 	if r.pubPC != nil {
 		r.pubPC.Close()
@@ -270,6 +289,11 @@ func (r *SFURelay) readTrack(track *webrtc.TrackRemote) {
 		if !frameValid {
 			continue
 		}
+		if len(frameBuf)+len(vp8Payload) > 300*1024 {
+			frameValid = false
+			frameBuf = frameBuf[:0]
+			continue
+		}
 		frameBuf = append(frameBuf, vp8Payload...)
 		if !pkt.Marker {
 			continue
@@ -279,24 +303,13 @@ func (r *SFURelay) readTrack(track *webrtc.TrackRemote) {
 			log.Printf("[video] recv vp8 frame #%d %d bytes", recvCount, len(frameBuf))
 		}
 
-		res := r.obf.Decode(frameBuf)
+		r.transportMu.Lock()
+		endpoint := r.transport
+		r.transportMu.Unlock()
+		if endpoint != nil {
+			endpoint.HandleFrame(frameBuf)
+		}
 		frameBuf = frameBuf[:0]
 		frameValid = false
-
-		if !res.HasFrame || res.SelfEcho {
-			continue
-		}
-		if res.PeerRestart {
-			log.Printf("[video] peer restart detected, new epoch=0x%08x", res.PeerEpoch)
-			if r.OnPeerRestart != nil {
-				r.OnPeerRestart()
-			}
-		}
-		if res.Keepalive || len(res.Payload) == 0 {
-			continue
-		}
-		if r.tun != nil && r.tun.OnData != nil {
-			r.tun.OnData(res.Payload)
-		}
 	}
 }

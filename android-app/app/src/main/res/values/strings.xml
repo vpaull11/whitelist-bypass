@@ -179,4 +179,26 @@
     <string name="activity_empty">No events yet</string>
     <string name="activity_copy">Copy raw</string>
     <string name="activity_share">Share file</string>
+    <string name="settings_row_routing">Service routing (HAPP)</string>
+    <string name="routing_enabled_summary">Enabled · domain/IP rules; reconnect to apply changes</string>
+    <string name="routing_disabled_summary">Off · import a HAPP routing profile</string>
+    <string name="routing_enable">Enable service routing</string>
+    <string name="routing_hint">happ://routing/add/…</string>
+    <string name="routing_preview">Preview import</string>
+    <string name="routing_update">Update databases</string>
+    <string name="routing_delete">Delete profile</string>
+    <string name="routing_cancel">Cancel download</string>
+    <string name="routing_none">No saved profile</string>
+    <string name="routing_limitations">VPN mode only. Rules apply after app-level split tunneling. FakeDNS is off: shared CDN IPs and an app’s own encrypted DNS limit domain matching. Unmatched traffic is DIRECT unless GlobalProxy is enabled. A failed PROXY flow never falls back to DIRECT. IPv6 retains the current IPv4 fallback policy.</string>
+    <string name="routing_reconnect">Reconnect VPN to apply routing changes. Existing connections keep their previous rules.</string>
+    <string name="routing_import_confirm">Download and save profile?</string>
+    <string name="routing_import_note">Only the displayed database URLs will be downloaded. This saves the profile but does not enable routing automatically.</string>
+    <string name="routing_save">Download and save</string>
+    <string name="routing_saved">Profile and databases saved. Reconnect VPN if routing is enabled.</string>
+    <string name="routing_apply">Save; reconnect manually</string>
+    <string name="routing_error">Routing error: %1$s</string>
+    <string name="routing_google_dns">Google DNS through tunnel</string>
+    <string name="routing_google_dns_note">On by default: Google DoH (8.8.8.8 / 8.8.4.4) resolves names through the VPN, including DIRECT services. Turn off to use the DNS settings from your HAPP profile. This does not change service routes. Reconnect VPN to apply.</string>
+    <string name="routing_restore">Restore default routing link</string>
+    <string name="routing_restore_note">Replace the text with the bundled RU-SPLIT link? The saved active profile will not change until you import it.</string>
 </resources>
